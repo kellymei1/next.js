@@ -515,16 +515,6 @@ export function generateValidatorFile(
   getStaticPaths?: (context: any) => Promise<any> | any
   getServerSideProps?: (context: any) => Promise<any> | any
   getInitialProps?: (context: any) => Promise<any> | any
-  /**
-   * Segment configuration for legacy Pages Router pages.
-   * Validated at build-time by parsePagesSegmentConfig.
-   */
-  config?: {
-    amp?: boolean | 'hybrid' | string // necessary for JS
-    maxDuration?: number
-    runtime?: 'edge' | 'experimental-edge' | 'nodejs' | string // necessary unless config is exported as const
-    regions?: string[]
-  }
 }
 
 `
@@ -566,15 +556,6 @@ export function generateValidatorFile(
   if (pagesApiRouteValidations) {
     typeDefinitions += `type ApiRouteConfig = {
   default: (req: any, res: any) => ReturnType<NextApiHandler>
-  config?: {
-    api?: {
-      bodyParser?: boolean | { sizeLimit?: string }
-      responseLimit?: string | number | boolean
-      externalResolver?: boolean
-    }
-    runtime?: 'edge' | 'experimental-edge' | 'nodejs' | string // necessary unless config is exported as const
-    maxDuration?: number
-  }
 }
 
 `
