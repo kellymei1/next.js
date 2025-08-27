@@ -335,6 +335,7 @@ export const configSchema: zod.ZodType<NextConfig> = z.lazy(() =>
     experimental: z
       .strictObject({
         adapterPath: z.string().optional(),
+        appNewScrollHandler: z.boolean().optional(),
         useSkewCookie: z.boolean().optional(),
         after: z.boolean().optional(),
         appNavFailHandling: z.boolean().optional(),
