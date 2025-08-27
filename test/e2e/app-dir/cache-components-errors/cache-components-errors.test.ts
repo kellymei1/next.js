@@ -6,6 +6,13 @@ import {
 } from './utils'
 
 const isRspack = process.env.NEXT_RSPACK !== undefined
+const enableNewScrollHandler = Boolean(
+  process.env.__NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER
+)
+
+const innerScrollAndFocusHandlerName = enableNewScrollHandler
+  ? 'InnerScrollAndFocusHandlerNew'
+  : 'InnerScrollAndFocusHandlerOld'
 
 describe('Cache Components Errors', () => {
   const { next, isTurbopack, isNextStart, skipped } = nextTestSetup({
@@ -224,7 +231,7 @@ describe('Cache Components Errors', () => {
                    at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                    at LoadingBoundary (bundler:///<next-src>)
                    at ErrorBoundary (bundler:///<next-src>)
-                   at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                   at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                    at ScrollAndFocusHandler (bundler:///<next-src>)
                    at RenderFromTemplateContext (bundler:///<next-src>)
                    at OuterLayoutRouter (bundler:///<next-src>)
@@ -238,17 +245,17 @@ describe('Cache Components Errors', () => {
                    at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                    at LoadingBoundary (bundler:///<next-src>)
                    at ErrorBoundary (bundler:///<next-src>)
-                   at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                   at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                    at ScrollAndFocusHandler (bundler:///<next-src>)
                    at RenderFromTemplateContext (bundler:///<next-src>)
                    at OuterLayoutRouter (bundler:///<next-src>)
-                 330 |  */
-                 331 | function InnerLayoutRouter({
-               > 332 |   tree,
+                 451 |  */
+                 452 | function InnerLayoutRouter({
+               > 453 |   tree,
                      |   ^
-                 333 |   segmentPath,
-                 334 |   cacheNode,
-                 335 |   url,
+                 454 |   segmentPath,
+                 455 |   cacheNode,
+                 456 |   url,
                To get a more detailed stack trace and pinpoint the issue, start the app in development mode by running \`next dev\`, then open "/dynamic-metadata-error-route" in your browser to investigate the error.
                Error occurred prerendering page "/dynamic-metadata-error-route". Read more: https://nextjs.org/docs/messages/prerender-error
 
@@ -698,7 +705,7 @@ describe('Cache Components Errors', () => {
                    at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                    at LoadingBoundary (bundler:///<next-src>)
                    at ErrorBoundary (bundler:///<next-src>)
-                   at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                   at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                    at ScrollAndFocusHandler (bundler:///<next-src>)
                    at RenderFromTemplateContext (bundler:///<next-src>)
                    at OuterLayoutRouter (bundler:///<next-src>)
@@ -712,7 +719,7 @@ describe('Cache Components Errors', () => {
                    at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                    at LoadingBoundary (bundler:///<next-src>)
                    at ErrorBoundary (bundler:///<next-src>)
-                   at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                   at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                    at ScrollAndFocusHandler (bundler:///<next-src>)
                    at RenderFromTemplateContext (bundler:///<next-src>)
                    at OuterLayoutRouter (bundler:///<next-src>)
@@ -731,7 +738,7 @@ describe('Cache Components Errors', () => {
                    at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                    at LoadingBoundary (bundler:///<next-src>)
                    at ErrorBoundary (bundler:///<next-src>)
-                   at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                   at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                    at ScrollAndFocusHandler (bundler:///<next-src>)
                    at RenderFromTemplateContext (bundler:///<next-src>)
                    at OuterLayoutRouter (bundler:///<next-src>)
@@ -745,17 +752,17 @@ describe('Cache Components Errors', () => {
                    at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                    at LoadingBoundary (bundler:///<next-src>)
                    at ErrorBoundary (bundler:///<next-src>)
-                   at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                   at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                    at ScrollAndFocusHandler (bundler:///<next-src>)
                    at RenderFromTemplateContext (bundler:///<next-src>)
                    at OuterLayoutRouter (bundler:///<next-src>)
-                 330 |  */
-                 331 | function InnerLayoutRouter({
-               > 332 |   tree,
+                 451 |  */
+                 452 | function InnerLayoutRouter({
+               > 453 |   tree,
                      |   ^
-                 333 |   segmentPath,
-                 334 |   cacheNode,
-                 335 |   url,
+                 454 |   segmentPath,
+                 455 |   cacheNode,
+                 456 |   url,
                To get a more detailed stack trace and pinpoint the issue, start the app in development mode by running \`next dev\`, then open "/dynamic-root" in your browser to investigate the error.
                Error occurred prerendering page "/dynamic-root". Read more: https://nextjs.org/docs/messages/prerender-error
 
@@ -2106,7 +2113,7 @@ describe('Cache Components Errors', () => {
                      at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                      at LoadingBoundary (bundler:///<next-src>)
                      at ErrorBoundary (bundler:///<next-src>)
-                     at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                     at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                      at ScrollAndFocusHandler (bundler:///<next-src>)
                      at RenderFromTemplateContext (<anonymous>)
                      at OuterLayoutRouter (bundler:///<next-src>)
@@ -2119,7 +2126,7 @@ describe('Cache Components Errors', () => {
                      at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                      at LoadingBoundary (bundler:///<next-src>)
                      at ErrorBoundary (bundler:///<next-src>)
-                     at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                     at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                      at ScrollAndFocusHandler (bundler:///<next-src>)
                      at RenderFromTemplateContext (<anonymous>)
                      at OuterLayoutRouter (bundler:///<next-src>)
@@ -2130,17 +2137,17 @@ describe('Cache Components Errors', () => {
                      at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                      at LoadingBoundary (bundler:///<next-src>)
                      at ErrorBoundary (bundler:///<next-src>)
-                     at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                     at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                      at ScrollAndFocusHandler (bundler:///<next-src>)
                      at RenderFromTemplateContext (<anonymous>)
                      at OuterLayoutRouter (bundler:///<next-src>)
-                   330 |  */
-                   331 | function InnerLayoutRouter({
-                 > 332 |   tree,
+                   451 |  */
+                   452 | function InnerLayoutRouter({
+                 > 453 |   tree,
                        |   ^
-                   333 |   segmentPath,
-                   334 |   cacheNode,
-                   335 |   url,
+                   454 |   segmentPath,
+                   455 |   cacheNode,
+                   456 |   url,
                  To get a more detailed stack trace and pinpoint the issue, start the app in development mode by running \`next dev\`, then open "/sync-attribution/unguarded-async-guarded-clientsync" in your browser to investigate the error.
                  Error occurred prerendering page "/sync-attribution/unguarded-async-guarded-clientsync". Read more: https://nextjs.org/docs/messages/prerender-error
 
@@ -3079,7 +3086,7 @@ describe('Cache Components Errors', () => {
                      at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                      at LoadingBoundary (bundler:///<next-src>)
                      at ErrorBoundary (bundler:///<next-src>)
-                     at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                     at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                      at ScrollAndFocusHandler (bundler:///<next-src>)
                      at RenderFromTemplateContext (bundler:///<next-src>)
                      at OuterLayoutRouter (bundler:///<next-src>)
@@ -3093,17 +3100,17 @@ describe('Cache Components Errors', () => {
                      at HTTPAccessFallbackBoundary (bundler:///<next-src>)
                      at LoadingBoundary (bundler:///<next-src>)
                      at ErrorBoundary (bundler:///<next-src>)
-                     at InnerScrollAndFocusHandler (bundler:///<next-src>)
+                     at ${innerScrollAndFocusHandlerName} (bundler:///<next-src>)
                      at ScrollAndFocusHandler (bundler:///<next-src>)
                      at RenderFromTemplateContext (bundler:///<next-src>)
                      at OuterLayoutRouter (bundler:///<next-src>)
-                   330 |  */
-                   331 | function InnerLayoutRouter({
-                 > 332 |   tree,
+                   451 |  */
+                   452 | function InnerLayoutRouter({
+                 > 453 |   tree,
                        |   ^
-                   333 |   segmentPath,
-                   334 |   cacheNode,
-                   335 |   url,
+                   454 |   segmentPath,
+                   455 |   cacheNode,
+                   456 |   url,
                  To get a more detailed stack trace and pinpoint the issue, start the app in development mode by running \`next dev\`, then open "/use-cache-private-without-suspense" in your browser to investigate the error.
                  Error occurred prerendering page "/use-cache-private-without-suspense". Read more: https://nextjs.org/docs/messages/prerender-error
 

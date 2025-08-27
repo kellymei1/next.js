@@ -5,6 +5,14 @@ import path from 'path'
 import { outdent } from 'outdent'
 import { getToastErrorCount, retry } from 'next-test-utils'
 
+const enableNewScrollHandler = Boolean(
+  process.env.__NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER
+)
+
+const innerScrollAndFocusHandlerName = enableNewScrollHandler
+  ? 'InnerScrollAndFocusHandlerNew'
+  : 'InnerScrollAndFocusHandlerOld'
+
 describe('Error overlay for hydration errors in App router', () => {
   const { next, isTurbopack } = nextTestSetup({
     files: new FileRef(path.join(__dirname, 'fixtures', 'default-template')),
@@ -74,7 +82,7 @@ describe('Error overlay for hydration errors in App router', () => {
      {
        "componentStack": "...
          <ScrollAndFocusHandler segmentPath={[...]}>
-           <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+           <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
              <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                <LoadingBoundary loading={null}>
                  <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -154,7 +162,7 @@ describe('Error overlay for hydration errors in App router', () => {
      {
        "componentStack": "...
          <ScrollAndFocusHandler segmentPath={[...]}>
-           <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+           <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
              <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                <LoadingBoundary loading={null}>
                  <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -311,7 +319,7 @@ describe('Error overlay for hydration errors in App router', () => {
      {
        "componentStack": "...
          <ScrollAndFocusHandler segmentPath={[...]}>
-           <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+           <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
              <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                <LoadingBoundary loading={null}>
                  <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -372,7 +380,7 @@ describe('Error overlay for hydration errors in App router', () => {
        "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -426,7 +434,7 @@ describe('Error overlay for hydration errors in App router', () => {
        "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -488,7 +496,7 @@ describe('Error overlay for hydration errors in App router', () => {
      [
        {
          "componentStack": "...
-         <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+         <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
            <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
              <LoadingBoundary loading={null}>
                <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -523,7 +531,7 @@ describe('Error overlay for hydration errors in App router', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -582,7 +590,7 @@ describe('Error overlay for hydration errors in App router', () => {
        "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -741,7 +749,7 @@ describe('Error overlay for hydration errors in App router', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -821,7 +829,7 @@ describe('Error overlay for hydration errors in App router', () => {
      [
        {
          "componentStack": "...
-         <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+         <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
            <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
              <LoadingBoundary loading={null}>
                <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -896,7 +904,7 @@ describe('Error overlay for hydration errors in App router', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>
@@ -972,7 +980,7 @@ describe('Error overlay for hydration errors in App router', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={<SegmentViewNode>} forbidden={undefined} unauthorized={undefined}>

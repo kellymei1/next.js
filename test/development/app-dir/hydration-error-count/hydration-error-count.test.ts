@@ -1,5 +1,13 @@
 import { nextTestSetup } from 'e2e-utils'
 
+const enableNewScrollHandler = Boolean(
+  process.env.__NEXT_EXPERIMENTAL_APP_NEW_SCROLL_HANDLER
+)
+
+const innerScrollAndFocusHandlerName = enableNewScrollHandler
+  ? 'InnerScrollAndFocusHandlerNew'
+  : 'InnerScrollAndFocusHandlerOld'
+
 describe('hydration-error-count', () => {
   const { next } = nextTestSetup({
     files: __dirname,
@@ -14,7 +22,7 @@ describe('hydration-error-count', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
@@ -66,7 +74,7 @@ describe('hydration-error-count', () => {
        "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
@@ -106,7 +114,7 @@ describe('hydration-error-count', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
@@ -138,7 +146,7 @@ describe('hydration-error-count', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
@@ -180,7 +188,7 @@ describe('hydration-error-count', () => {
          "componentStack": "...
          <RenderFromTemplateContext>
            <ScrollAndFocusHandler segmentPath={[...]}>
-             <InnerScrollAndFocusHandler segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
+             <${innerScrollAndFocusHandlerName} segmentPath={[...]} focusAndScrollRef={{apply:false, ...}}>
                <ErrorBoundary errorComponent={undefined} errorStyles={undefined} errorScripts={undefined}>
                  <LoadingBoundary loading={null}>
                    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
