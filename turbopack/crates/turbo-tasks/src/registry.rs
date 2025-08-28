@@ -1,35 +1,54 @@
 use once_cell::sync::Lazy;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     TraitType, ValueType,
-    id::{TraitTypeId, ValueTypeId},
+    id::{FunctionId, TraitTypeId, ValueTypeId},
     macro_helpers::CollectableFunction,
     native_function::NativeFunction,
     value_type::{CollectableTrait, CollectableValueType},
 };
 
-pub fn get_function_by_global_name(global_name: &str) -> &'static NativeFunction {
-    static NAME_TO_FUNCTION: Lazy<FxHashMap<&'static str, &'static NativeFunction>> =
-        Lazy::new(|| {
-            let mut map = FxHashMap::default();
-            for collected in inventory::iter::<CollectableFunction> {
-                let native_function = &**collected.0;
-                let global_name = native_function.global_name;
-                let prev = map.insert(global_name, native_function);
-                debug_assert!(
-                    prev.is_none(),
-                    "registration mappings for {global_name} are inconsistent!"
-                );
-            }
-            map.shrink_to_fit();
-            map
-        });
-
-    match NAME_TO_FUNCTION.get(global_name) {
-        Some(f) => f,
-        None => panic!("unable to find function: {global_name}"),
+struct Functions {
+    id_to_value: Box<[&'static NativeFunction]>,
+    value_to_id: FxHashMap<&'static NativeFunction, FunctionId>,
+}
+static FUNCTIONS: Lazy<Functions> = Lazy::new(|| {
+    let mut functions = inventory::iter::<CollectableFunction>
+        .into_iter()
+        .map(|c| &**c.0)
+        .collect::<Vec<_>>();
+    functions.sort_by_key(|f| f.global_name);
+    let mut value_to_id = FxHashMap::default();
+    let mut names = FxHashSet::default();
+    names.reserve(functions.len());
+    for (index, &native_function) in functions.iter().enumerate() {
+        // SAFETY: as a usize, usize+1 is definitely non-zero.
+        let id = unsafe { FunctionId::new_unchecked((index + 1).try_into().unwrap()) };
+        value_to_id.insert(native_function, id);
+        let global_name = native_function.global_name;
+        let new = names.insert(global_name);
+        debug_assert!(
+            !new,
+            "multiple functions registered with name: {global_name}!"
+        );
     }
+    value_to_id.shrink_to_fit();
+    Functions {
+        id_to_value: functions.into_boxed_slice(),
+        value_to_id,
+    }
+});
+
+pub fn get_native_function(id: FunctionId) -> &'static NativeFunction {
+    FUNCTIONS.id_to_value[*id as usize - 1]
+}
+
+pub fn get_function_id(func: &'static NativeFunction) -> FunctionId {
+    *FUNCTIONS
+        .value_to_id
+        .get(&func)
+        .expect("function isn't registered")
 }
 
 struct Values {
@@ -50,17 +69,18 @@ static VALUES: Lazy<Values> = Lazy::new(|| {
 
     let mut value_to_id = FxHashMap::default();
     value_to_id.reserve(all_values.len());
-    let mut global_name_to_value = FxHashMap::default();
-    global_name_to_value.reserve(all_values.len());
+    // Our sort above is non-sensical if names are not unique
+    let mut names = FxHashSet::default();
+    names.reserve(all_values.len());
 
     for (index, &value_type) in all_values.iter().enumerate() {
         // SAFETY: as a usize, usize+1 is definitely non-zero.
         let id = unsafe { ValueTypeId::new_unchecked((index + 1).try_into().unwrap()) };
         value_to_id.insert(value_type, id);
-        let prev = global_name_to_value.insert(value_type.global_name, (id, value_type));
+        let new = names.insert(value_type.global_name);
         debug_assert!(
-            prev.is_none(),
-            "two traits registered with the same name: {}",
+            new,
+            "two values registered with the same name: {}",
             value_type.global_name
         );
     }
