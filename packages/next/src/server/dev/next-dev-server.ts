@@ -26,7 +26,6 @@ import fs from 'fs'
 import { Worker } from 'next/dist/compiled/jest-worker'
 import { join as pathJoin } from 'path'
 import { ampValidation } from '../../build/output'
-import { PUBLIC_DIR_MIDDLEWARE_CONFLICT } from '../../lib/constants'
 import { findPagesDir } from '../../lib/find-pages-dir'
 import {
   PHASE_DEVELOPMENT_SERVER,
@@ -37,8 +36,6 @@ import {
 } from '../../shared/lib/constants'
 import Server, { WrappedBuildError } from '../next-server'
 import { normalizePagePath } from '../../shared/lib/page-path/normalize-page-path'
-import { pathHasPrefix } from '../../shared/lib/router/utils/path-has-prefix'
-import { removePathPrefix } from '../../shared/lib/router/utils/remove-path-prefix'
 import { Telemetry } from '../../telemetry/storage'
 import { type Span, setGlobal, trace } from '../../trace'
 import { findPageFile } from '../lib/find-page-file'
@@ -47,9 +44,8 @@ import { withCoalescedInvoke } from '../../lib/coalesced-function'
 import { loadDefaultErrorComponents } from '../load-default-error-components'
 import { DecodeError, MiddlewareNotFoundError } from '../../shared/lib/utils'
 import * as Log from '../../build/output/log'
-import isError, { getProperError } from '../../lib/is-error'
+import { getProperError } from '../../lib/is-error'
 import { isMiddlewareFile } from '../../build/utils'
-import { formatServerError } from '../../lib/format-server-error'
 import { DevRouteMatcherManager } from '../route-matcher-managers/dev-route-matcher-manager'
 import { DevPagesRouteMatcherProvider } from '../route-matcher-providers/dev/dev-pages-route-matcher-provider'
 import { DevPagesAPIRouteMatcherProvider } from '../route-matcher-providers/dev/dev-pages-api-route-matcher-provider'
@@ -572,57 +568,6 @@ export default class DevServer extends Server {
       })
       .stop()
     return result
-  }
-
-  async run(
-    req: NodeNextRequest,
-    res: NodeNextResponse,
-    parsedUrl: UrlWithParsedQuery
-  ): Promise<void> {
-    await this.ready?.promise
-
-    const { basePath } = this.nextConfig
-    let originalPathname: string | null = null
-
-    // TODO: see if we can remove this in the future
-    if (basePath && pathHasPrefix(parsedUrl.pathname || '/', basePath)) {
-      // strip basePath before handling dev bundles
-      // If replace ends up replacing the full url it'll be `undefined`, meaning we have to default it to `/`
-      originalPathname = parsedUrl.pathname
-      parsedUrl.pathname = removePathPrefix(parsedUrl.pathname || '/', basePath)
-    }
-
-    const { pathname } = parsedUrl
-
-    if (pathname!.startsWith('/_next')) {
-      if (fs.existsSync(pathJoin(this.publicDir, '_next'))) {
-        throw new Error(PUBLIC_DIR_MIDDLEWARE_CONFLICT)
-      }
-    }
-
-    if (originalPathname) {
-      // restore the path before continuing so that custom-routes can accurately determine
-      // if they should match against the basePath or not
-      parsedUrl.pathname = originalPathname
-    }
-    try {
-      return await super.run(req, res, parsedUrl)
-    } catch (error) {
-      const err = getProperError(error)
-      formatServerError(err)
-      this.logErrorWithOriginalStack(err)
-      if (!res.sent) {
-        res.statusCode = 500
-        try {
-          return await this.renderError(err, req, res, pathname!, {
-            __NEXT_PAGE: (isError(err) && err.page) || pathname || '',
-          })
-        } catch (internalErr) {
-          console.error(internalErr)
-          res.body('Internal Server Error').send()
-        }
-      }
-    }
   }
 
   protected logErrorWithOriginalStack(
