@@ -4,11 +4,6 @@ import { retry } from 'next-test-utils'
 describe('router smooth scroll optimization (optimized)', () => {
   const { next } = nextTestSetup({
     files: __dirname + '/fixtures/optimized',
-    nextConfig: {
-      experimental: {
-        optimizeRouterScrolling: true,
-      },
-    },
   })
 
   const getTopScroll = async (browser: any) =>
@@ -66,11 +61,6 @@ describe('router smooth scroll optimization (optimized)', () => {
 describe('router smooth scroll optimization (optimized early exit)', () => {
   const { next } = nextTestSetup({
     files: __dirname + '/fixtures/optimized-no-data',
-    nextConfig: {
-      experimental: {
-        optimizeRouterScrolling: true,
-      },
-    },
   })
 
   const getTopScroll = async (browser: any) =>
