@@ -3,10 +3,8 @@ use std::time::{Duration, Instant};
 use criterion::{BenchmarkId, Criterion, black_box};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::spawn;
-use turbo_tasks::TurboTasks;
+use turbo_tasks::{TurboTasks, unmark_top_level_task_may_leak_eventually_consistent_state};
 use turbo_tasks_backend::{BackendOptions, TurboTasksBackend, noop_backing_storage};
-
-use super::register;
 
 #[global_allocator]
 static ALLOC: turbo_tasks_malloc::TurboMalloc = turbo_tasks_malloc::TurboMalloc;
@@ -28,8 +26,6 @@ fn busy_turbo(key: u64, duration: Duration) {
 }
 
 pub fn overhead(c: &mut Criterion) {
-    register();
-
     let mut group = c.benchmark_group("task_overhead");
     group.sample_size(100);
 
@@ -186,7 +182,8 @@ fn run_turbo<Mode: TurboMode>(
         ));
 
         async move {
-            tt.run_once(async move {
+            tt.run(async move {
+                unmark_top_level_task_may_leak_eventually_consistent_state();
                 // If cached run once outside the loop to ensure the tasks are cached.
                 if Mode::is_cached() {
                     for i in 0..iters {

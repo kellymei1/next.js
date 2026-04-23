@@ -1,21 +1,22 @@
 use anyhow::Result;
 use turbo_rcstr::{RcStr, rcstr};
-use turbo_tasks::{ResolvedVc, Vc, fxindexmap};
+use turbo_tasks::{ResolvedVc, ValueToStringRef, Vc, fxindexmap};
 use turbo_tasks_fs::FileSystemPath;
 use turbopack::ModuleAssetContext;
 use turbopack_core::{
     context::AssetContext,
+    file_source::FileSource,
     module::Module,
     reference_type::{EntryReferenceSubType, ReferenceType},
     source::Source,
 };
 
 use crate::{
-    app_segment_config::NextSegmentConfig,
     next_app::{AppEntry, AppPage, AppPath},
     next_config::{NextConfig, OutputType},
     next_edge::entry::wrap_edge_entry,
     parse_segment_config_from_source,
+    segment_config::{NextSegmentConfig, ParseSegmentMode},
     util::{NextRuntime, app_function_name, load_next_js_template},
 };
 
@@ -36,11 +37,11 @@ pub async fn get_app_route_entry(
     original_segment_config: Option<Vc<NextSegmentConfig>>,
     next_config: Vc<NextConfig>,
 ) -> Result<Vc<AppEntry>> {
-    let segment_from_source = parse_segment_config_from_source(source);
+    let segment_from_source = parse_segment_config_from_source(source, ParseSegmentMode::App);
     let config = if let Some(original_segment_config) = original_segment_config {
         let mut segment_config = segment_from_source.owned().await?;
         segment_config.apply_parent_config(&*original_segment_config.await?);
-        segment_config.into()
+        segment_config.cell()
     } else {
         segment_from_source
     };
@@ -60,8 +61,8 @@ pub async fn get_app_route_entry(
     let inner = rcstr!("INNER_APP_ROUTE");
 
     let output_type: &str = next_config
+        .output()
         .await?
-        .output
         .as_ref()
         .map(|o| match o {
             OutputType::Standalone => "\"standalone\"",
@@ -73,17 +74,17 @@ pub async fn get_app_route_entry(
     let virtual_source = load_next_js_template(
         "app-route.js",
         project_root.clone(),
-        &[
+        [
             ("VAR_DEFINITION_PAGE", &*page.to_string()),
             ("VAR_DEFINITION_PATHNAME", &pathname),
             ("VAR_DEFINITION_FILENAME", path.file_stem().unwrap()),
             // TODO(alexkirsz) Is this necessary?
             ("VAR_DEFINITION_BUNDLE_PATH", ""),
-            ("VAR_RESOLVED_PAGE_PATH", &path.value_to_string().await?),
+            ("VAR_RESOLVED_PAGE_PATH", &path.to_string_ref().await?),
             ("VAR_USERLAND", &inner),
         ],
-        &[("nextConfigOutput", output_type)],
-        &[],
+        [("nextConfigOutput", output_type)],
+        [],
     )
     .await?;
 
@@ -102,7 +103,7 @@ pub async fn get_app_route_entry(
 
     let mut rsc_entry = module_asset_context
         .process(
-            Vc::upcast(virtual_source),
+            virtual_source,
             ReferenceType::Internal(ResolvedVc::cell(inner_assets)),
         )
         .module();
@@ -135,25 +136,79 @@ async fn wrap_edge_route(
     next_config: Vc<NextConfig>,
 ) -> Result<Vc<Box<dyn Module>>> {
     let inner = rcstr!("INNER_ROUTE_ENTRY");
+    let mut cache_handler_imports = String::new();
+    let mut cache_handler_map_entries = String::new();
+    let mut incremental_cache_handler_import = None;
+    let mut cache_handler_inner_assets = fxindexmap! {};
 
-    let next_config = &*next_config.await?;
+    let cache_handlers = next_config.cache_handlers_map().owned().await?;
+    for (index, (kind, handler_path)) in cache_handlers.iter().enumerate() {
+        let cache_handler_inner: RcStr = format!("INNER_CACHE_HANDLER_{index}").into();
+        let cache_handler_var = format!("cacheHandler{index}");
+        cache_handler_imports.push_str(&format!(
+            "import {cache_handler_var} from {};\n",
+            serde_json::to_string(&*cache_handler_inner)?
+        ));
+        cache_handler_map_entries.push_str(&format!(
+            "  {}: {cache_handler_var},\n",
+            serde_json::to_string(kind.as_str())?
+        ));
+
+        let cache_handler_module = asset_context
+            .process(
+                Vc::upcast(FileSource::new(project_root.join(handler_path)?)),
+                ReferenceType::Undefined,
+            )
+            .module()
+            .to_resolved()
+            .await?;
+        cache_handler_inner_assets.insert(cache_handler_inner, cache_handler_module);
+    }
+
+    for cache_handler_path in next_config
+        .cache_handler(project_root.clone())
+        .await?
+        .into_iter()
+    {
+        let cache_handler_inner: RcStr = "INNER_INCREMENTAL_CACHE_HANDLER".into();
+        incremental_cache_handler_import = Some(cache_handler_inner.clone());
+        let cache_handler_module = asset_context
+            .process(
+                Vc::upcast(FileSource::new(cache_handler_path.clone())),
+                ReferenceType::Undefined,
+            )
+            .module()
+            .to_resolved()
+            .await?;
+        cache_handler_inner_assets.insert(cache_handler_inner, cache_handler_module);
+    }
 
     let source = load_next_js_template(
         "edge-app-route.js",
         project_root.clone(),
-        &[("VAR_USERLAND", &*inner), ("VAR_PAGE", &page.to_string())],
-        &[("nextConfig", &*serde_json::to_string(next_config)?)],
-        &[],
+        [("VAR_USERLAND", &*inner), ("VAR_PAGE", &page.to_string())],
+        [
+            ("cacheHandlerImports", cache_handler_imports.as_str()),
+            (
+                "edgeCacheHandlersRegistration",
+                cache_handler_map_entries.as_str(),
+            ),
+        ],
+        [(
+            "incrementalCacheHandler",
+            incremental_cache_handler_import.as_deref(),
+        )],
     )
     .await?;
 
-    let inner_assets = fxindexmap! {
+    let mut inner_assets = fxindexmap! {
         inner => entry
     };
+    inner_assets.extend(cache_handler_inner_assets);
 
     let wrapped = asset_context
         .process(
-            Vc::upcast(source),
+            source,
             ReferenceType::Internal(ResolvedVc::cell(inner_assets)),
         )
         .module();

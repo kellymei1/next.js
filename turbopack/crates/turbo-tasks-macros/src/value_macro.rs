@@ -6,51 +6,22 @@ use quote::{ToTokens, quote, quote_spanned};
 use regex::Regex;
 use syn::{
     Error, Expr, ExprLit, Fields, FieldsUnnamed, Generics, Item, ItemEnum, ItemStruct, Lit, LitStr,
-    Meta, MetaNameValue, Result, Token,
+    Meta, MetaNameValue, Token,
     parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
+    parse_macro_input,
     spanned::Spanned,
 };
-use turbo_tasks_macros_shared::{
-    get_register_value_type_ident, get_value_type_ident, get_value_type_init_ident,
-};
 
-enum IntoMode {
-    None,
-    New,
-    Shared,
-}
-
-impl Parse for IntoMode {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let ident = input.parse::<LitStr>()?;
-        Self::try_from(ident)
-    }
-}
-
-impl TryFrom<LitStr> for IntoMode {
-    type Error = Error;
-
-    fn try_from(lit: LitStr) -> std::result::Result<Self, Self::Error> {
-        match lit.value().as_str() {
-            "none" => Ok(IntoMode::None),
-            "new" => Ok(IntoMode::New),
-            "shared" => Ok(IntoMode::Shared),
-            _ => Err(Error::new_spanned(
-                &lit,
-                "expected \"none\", \"new\" or \"shared\"",
-            )),
-        }
-    }
-}
+use crate::{global_name::global_name_for_type, ident::get_value_type_ident};
 
 enum CellMode {
+    KeyedCompare,
+    Compare,
     New,
-    Shared,
 }
 
 impl Parse for CellMode {
-    fn parse(input: ParseStream) -> Result<Self> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
         let ident = input.parse::<LitStr>()?;
         Self::try_from(ident)
     }
@@ -59,23 +30,37 @@ impl Parse for CellMode {
 impl TryFrom<LitStr> for CellMode {
     type Error = Error;
 
-    fn try_from(lit: LitStr) -> std::result::Result<Self, Self::Error> {
+    fn try_from(lit: LitStr) -> Result<Self, Self::Error> {
         match lit.value().as_str() {
+            "keyed" => Ok(CellMode::KeyedCompare),
+            "compare" => Ok(CellMode::Compare),
             "new" => Ok(CellMode::New),
-            "shared" => Ok(CellMode::Shared),
-            _ => Err(Error::new_spanned(&lit, "expected \"new\" or \"shared\"")),
+            _ => Err(Error::new_spanned(
+                &lit,
+                "expected \"new\", \"keyed\", or \"compare\"",
+            )),
         }
     }
 }
 
+/// How a value type's cells are persisted across restarts.
 enum SerializationMode {
-    None,
+    /// Round-trip through bincode via auto-derived `Encode` / `Decode`.
     Auto,
+    /// Round-trip through bincode via a manual `Encode` / `Decode` impl
+    /// supplied by the value type.
     Custom,
+    /// No persistence of the value itself. Eviction policy is controlled
+    /// separately via the `evict` attribute.
+    Skip,
+    /// Persist only a hash of the value so post-eviction reads can detect
+    /// unchanged content and skip invalidation. Only valid with
+    /// `cell = "compare"` (or the default).
+    Hash,
 }
 
 impl Parse for SerializationMode {
-    fn parse(input: ParseStream) -> Result<Self> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
         let ident = input.parse::<LitStr>()?;
         Self::try_from(ident)
     }
@@ -84,14 +69,55 @@ impl Parse for SerializationMode {
 impl TryFrom<LitStr> for SerializationMode {
     type Error = Error;
 
-    fn try_from(lit: LitStr) -> std::result::Result<Self, Self::Error> {
+    fn try_from(lit: LitStr) -> Result<Self, Self::Error> {
         match lit.value().as_str() {
-            "none" => Ok(SerializationMode::None),
             "auto" => Ok(SerializationMode::Auto),
             "custom" => Ok(SerializationMode::Custom),
+            "skip" => Ok(SerializationMode::Skip),
+            "hash" => Ok(SerializationMode::Hash),
             _ => Err(Error::new_spanned(
                 &lit,
-                "expected \"none\", \"auto\", or \"custom\"",
+                "expected \"auto\", \"custom\", \"skip\", or \"hash\"",
+            )),
+        }
+    }
+}
+
+/// Eviction policy for a `serialization = "skip"` value type. Ignored for
+/// other serialization modes (the macro rejects non-`Always` values in that
+/// case).
+enum EvictMode {
+    /// Evictable freely. The next reader after eviction triggers a recompute
+    /// from the task's inputs. This is the default when `evict` is omitted.
+    Always,
+    /// Evictable, but re-deriving is non-trivial (e.g. WASM compile,
+    /// spawning a Node process pool). Eviction policy should prefer
+    /// evicting cheaper cells first.
+    Last,
+    /// Not evictable: the value holds interior-mutable state that
+    /// accumulates across the session (`State<>` cells, `Arc<Mutex<_>>`
+    /// dedup histories) and must stay in memory.
+    Never,
+}
+
+impl Parse for EvictMode {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ident = input.parse::<LitStr>()?;
+        Self::try_from(ident)
+    }
+}
+
+impl TryFrom<LitStr> for EvictMode {
+    type Error = Error;
+
+    fn try_from(lit: LitStr) -> Result<Self, Self::Error> {
+        match lit.value().as_str() {
+            "always" => Ok(EvictMode::Always),
+            "last" => Ok(EvictMode::Last),
+            "never" => Ok(EvictMode::Never),
+            _ => Err(Error::new_spanned(
+                &lit,
+                "expected \"always\", \"last\", or \"never\"",
             )),
         }
     }
@@ -99,21 +125,25 @@ impl TryFrom<LitStr> for SerializationMode {
 
 struct ValueArguments {
     serialization_mode: SerializationMode,
-    into_mode: IntoMode,
+    evict_mode: EvictMode,
+    shared: bool,
     cell_mode: CellMode,
     manual_eq: bool,
+    manual_hash: bool,
     transparent: bool,
     /// Should we `#[derive(turbo_tasks::OperationValue)]`?
     operation: Option<Span>,
 }
 
 impl Parse for ValueArguments {
-    fn parse(input: ParseStream) -> Result<Self> {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut result = ValueArguments {
             serialization_mode: SerializationMode::Auto,
-            into_mode: IntoMode::None,
-            cell_mode: CellMode::Shared,
+            evict_mode: EvictMode::Always,
+            shared: false,
+            cell_mode: CellMode::Compare,
             manual_eq: false,
+            manual_hash: false,
             transparent: false,
             operation: None,
         };
@@ -128,20 +158,7 @@ impl Parse for ValueArguments {
                 meta,
             ) {
                 ("shared", Meta::Path(_)) => {
-                    result.into_mode = IntoMode::Shared;
-                    result.cell_mode = CellMode::Shared;
-                }
-                (
-                    "into",
-                    Meta::NameValue(MetaNameValue {
-                        value:
-                            Expr::Lit(ExprLit {
-                                lit: Lit::Str(str), ..
-                            }),
-                        ..
-                    }),
-                ) => {
-                    result.into_mode = IntoMode::try_from(str)?;
+                    result.shared = true;
                 }
                 (
                     "serialization",
@@ -154,6 +171,18 @@ impl Parse for ValueArguments {
                     }),
                 ) => {
                     result.serialization_mode = SerializationMode::try_from(str)?;
+                }
+                (
+                    "evict",
+                    Meta::NameValue(MetaNameValue {
+                        value:
+                            Expr::Lit(ExprLit {
+                                lit: Lit::Str(str), ..
+                            }),
+                        ..
+                    }),
+                ) => {
+                    result.evict_mode = EvictMode::try_from(str)?;
                 }
                 (
                     "cell",
@@ -183,6 +212,22 @@ impl Parse for ValueArguments {
                         return Err(Error::new_spanned(&str, "expected \"manual\""));
                     };
                 }
+                (
+                    "hash",
+                    Meta::NameValue(MetaNameValue {
+                        value:
+                            Expr::Lit(ExprLit {
+                                lit: Lit::Str(str), ..
+                            }),
+                        ..
+                    }),
+                ) => {
+                    result.manual_hash = if str.value() == "manual" {
+                        true
+                    } else {
+                        return Err(Error::new_spanned(&str, "expected \"manual\""));
+                    };
+                }
                 ("transparent", Meta::Path(_)) => {
                     result.transparent = true;
                 }
@@ -194,8 +239,8 @@ impl Parse for ValueArguments {
                         &meta,
                         format!(
                             "unexpected {meta:?}, expected \"shared\", \"into\", \
-                             \"serialization\", \"cell\", \"eq\", \"transparent\", or \
-                             \"operation\""
+                             \"serialization\", \"evict\", \"cell\", \"eq\", \"hash\", \
+                             \"transparent\", or \"operation\""
                         ),
                     ));
                 }
@@ -207,23 +252,69 @@ impl Parse for ValueArguments {
 }
 
 pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
-    let mut item = parse_macro_input!(input as Item);
+    let item = parse_macro_input!(input as Item);
     let ValueArguments {
         serialization_mode,
-        into_mode,
+        evict_mode,
+        shared,
         cell_mode,
         manual_eq,
+        manual_hash,
         transparent,
         operation,
     } = parse_macro_input!(args as ValueArguments);
 
+    // `serialization = "hash"` only makes sense with `cell = "compare"` (the default).
+    if matches!(serialization_mode, SerializationMode::Hash)
+        && !matches!(cell_mode, CellMode::Compare)
+    {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "serialization = \"hash\" only makes sense with cell = \"compare\" (or default)",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // `hash = "manual"` only makes sense with `serialization = "hash"`.
+    if manual_hash && !matches!(serialization_mode, SerializationMode::Hash) {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "hash = \"manual\" only makes sense with serialization = \"hash\"",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // `evict = "last" | "never"` is only valid when `serialization = "skip"`;
+    // other persistence modes have their own eviction semantics fixed by the
+    // backend (Persistable: evict-and-restore, HashOnly: evict-with-hash-gate).
+    if !matches!(evict_mode, EvictMode::Always)
+        && !matches!(serialization_mode, SerializationMode::Skip)
+    {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "evict = \"last\" | \"never\" is only valid with serialization = \"skip\"",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let mut struct_attributes = vec![quote! {
+        #[derive(
+            turbo_tasks::ShrinkToFit,
+            turbo_tasks::trace::TraceRawVcs,
+            turbo_tasks::NonLocalValue,
+        )]
+        #[shrink_to_fit(crate = "turbo_tasks::macro_helpers::shrink_to_fit")]
+    }];
+
     let mut inner_type = None;
     if transparent {
         if let Item::Struct(ItemStruct {
-            attrs,
             fields: Fields::Unnamed(FieldsUnnamed { unnamed, .. }),
             ..
-        }) = &mut item
+        }) = &item
             && unnamed.len() == 1
         {
             let field = unnamed.iter().next().unwrap();
@@ -251,7 +342,7 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
                  [`{inner_type_string}`].",
             );
 
-            attrs.push(parse_quote! {
+            struct_attributes.push(quote! {
                 #[doc = #doc_str]
             });
         }
@@ -279,15 +370,6 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
-    let cell_mode = match cell_mode {
-        CellMode::New => quote! {
-            turbo_tasks::VcCellNewMode<#ident>
-        },
-        CellMode::Shared => quote! {
-            turbo_tasks::VcCellSharedMode<#ident>
-        },
-    };
-
     let (cell_prefix, cell_access_content, read) = if let Some(inner_type) = &inner_type {
         (
             quote! { pub },
@@ -295,12 +377,12 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
                 content.0
             },
             quote! {
-                turbo_tasks::VcTransparentRead::<#ident, #inner_type, #ident>
+                turbo_tasks::VcTransparentRead::<#ident, #inner_type>
             },
         )
     } else {
         (
-            if let IntoMode::New | IntoMode::Shared = into_mode {
+            if shared {
                 quote! { pub }
             } else {
                 quote! {}
@@ -310,6 +392,21 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
                 turbo_tasks::VcDefaultRead::<#ident>
             },
         )
+    };
+
+    let cell_mode = match cell_mode {
+        CellMode::New => quote! {
+            turbo_tasks::VcCellNewMode<#ident>
+        },
+        CellMode::Compare if matches!(serialization_mode, SerializationMode::Hash) => quote! {
+            turbo_tasks::VcCellHashedCompareMode<#ident>
+        },
+        CellMode::Compare => quote! {
+            turbo_tasks::VcCellCompareMode<#ident>
+        },
+        CellMode::KeyedCompare => quote! {
+            turbo_tasks::VcCellKeyedCompareMode<#ident>
+        },
     };
 
     let cell_struct = quote! {
@@ -331,35 +428,17 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
-    let into = if let IntoMode::New | IntoMode::Shared = into_mode {
-        quote! {
-            impl ::std::convert::From<#ident> for turbo_tasks::Vc<#ident> {
-                fn from(value: #ident) -> Self {
-                    value.cell()
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let mut struct_attributes = vec![quote! {
-        #[derive(
-            turbo_tasks::ShrinkToFit,
-            turbo_tasks::trace::TraceRawVcs,
-            turbo_tasks::NonLocalValue,
-        )]
-        #[shrink_to_fit(crate = "turbo_tasks::macro_helpers::shrink_to_fit")]
-    }];
     match serialization_mode {
-        SerializationMode::Auto => struct_attributes.push(quote! {
-            #[derive(
-                turbo_tasks::macro_helpers::serde::Serialize,
-                turbo_tasks::macro_helpers::serde::Deserialize,
-            )]
-            #[serde(crate = "turbo_tasks::macro_helpers::serde")]
-        }),
-        SerializationMode::None | SerializationMode::Custom => {}
+        SerializationMode::Auto => {
+            struct_attributes.push(quote! {
+                #[derive(
+                    turbo_tasks::macro_helpers::bincode::Encode,
+                    turbo_tasks::macro_helpers::bincode::Decode,
+                )]
+                #[bincode(crate = "turbo_tasks::macro_helpers::bincode")]
+            });
+        }
+        SerializationMode::Custom | SerializationMode::Skip | SerializationMode::Hash => {}
     };
     if inner_type.is_some() {
         // Transparent structs have their own manual `ValueDebug` implementation.
@@ -368,15 +447,18 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
         });
     } else {
         struct_attributes.push(quote! {
-            #[derive(
-                turbo_tasks::debug::ValueDebugFormat,
-                turbo_tasks::debug::internal::ValueDebug,
-            )]
+            #[derive(turbo_tasks::debug::ValueDebugFormat)]
+            #[cfg_attr(debug_assertions, derive(turbo_tasks::debug::internal::ValueDebug))]
         });
     }
     if !manual_eq {
         struct_attributes.push(quote! {
             #[derive(PartialEq, Eq)]
+        });
+    }
+    if matches!(serialization_mode, SerializationMode::Hash) && !manual_hash {
+        struct_attributes.push(quote! {
+            #[derive(turbo_tasks::DeterministicHash)]
         });
     }
     if let Some(span) = operation {
@@ -386,37 +468,61 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
         });
     }
 
-    let new_value_type = match serialization_mode {
-        SerializationMode::None => quote! {
-            turbo_tasks::ValueType::new::<#ident>()
+    let name = global_name_for_type(ident);
+    // Dispatch to the constructor whose name reflects the persistence +
+    // eviction combo. `evict` is only read when `serialization = Skip`;
+    // other modes ignore it (and the parser rejects non-Always values).
+    let new_value_type = match (&serialization_mode, &evict_mode) {
+        (SerializationMode::Auto | SerializationMode::Custom, _) => quote! {
+            turbo_tasks::ValueType::persistable::<#ident>(#name)
         },
-        SerializationMode::Auto | SerializationMode::Custom => {
-            quote! {
-                turbo_tasks::ValueType::new_with_any_serialization::<#ident>()
-            }
-        }
+        (SerializationMode::Hash, _) => quote! {
+            turbo_tasks::ValueType::hash_only::<#ident>(#name)
+        },
+        (SerializationMode::Skip, EvictMode::Always) => quote! {
+            turbo_tasks::ValueType::skip_persist::<#ident>(#name)
+        },
+        (SerializationMode::Skip, EvictMode::Last) => quote! {
+            turbo_tasks::ValueType::skip_persist_expensive::<#ident>(#name)
+        },
+        (SerializationMode::Skip, EvictMode::Never) => quote! {
+            turbo_tasks::ValueType::session_stateful::<#ident>(#name)
+        },
+    };
+    let has_serialization = match serialization_mode {
+        SerializationMode::Skip | SerializationMode::Hash => quote! { false },
+        SerializationMode::Auto | SerializationMode::Custom => quote! { true },
     };
 
     let value_debug_impl = if inner_type.is_some() {
         // For transparent values, we defer directly to the inner type's `ValueDebug`
         // implementation.
         quote! {
+            #[cfg(debug_assertions)]
             #[turbo_tasks::value_impl]
             impl turbo_tasks::debug::ValueDebug for #ident {
-                #[turbo_tasks::function]
-                async fn dbg(&self) -> anyhow::Result<turbo_tasks::Vc<turbo_tasks::debug::ValueDebugString>> {
-                    use turbo_tasks::debug::ValueDebugFormat;
-                    (&self.0).value_debug_format(usize::MAX).try_to_value_debug_string().await
-                }
-
-                #[turbo_tasks::function]
-                async fn dbg_depth(&self, depth: usize) -> anyhow::Result<turbo_tasks::Vc<turbo_tasks::debug::ValueDebugString>> {
-                    use turbo_tasks::debug::ValueDebugFormat;
-                    (&self.0).value_debug_format(depth).try_to_value_debug_string().await
+                fn dbg_depth<'a>(
+                    &'a self,
+                    depth: usize,
+                ) -> ::std::pin::Pin<
+                    ::std::boxed::Box<
+                        dyn ::std::future::Future<
+                                Output = ::anyhow::Result<::std::string::String>,
+                            > + ::std::marker::Send
+                            + 'a,
+                    >,
+                > {
+                    ::std::boxed::Box::pin(async move {
+                        use turbo_tasks::debug::ValueDebugFormat;
+                        (&self.0).value_debug_format(depth).try_to_string().await
+                    })
                 }
             }
+
         }
     } else {
+        // For non-transparent types, the debug impl is generated by
+        // `derive(turbo_tasks::debug::internal::ValueDebug)` (debug builds only).
         quote! {}
     };
 
@@ -427,6 +533,7 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
         read,
         cell_mode,
         new_value_type,
+        has_serialization,
     );
 
     let expanded = quote! {
@@ -436,8 +543,6 @@ pub fn value(args: TokenStream, input: TokenStream) -> TokenStream {
         impl #ident {
             #cell_struct
         }
-
-        #into
 
         #value_type_and_register_code
 
@@ -454,10 +559,9 @@ pub fn value_type_and_register(
     read: proc_macro2::TokenStream,
     cell_mode: proc_macro2::TokenStream,
     new_value_type: proc_macro2::TokenStream,
+    has_serialization: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let value_type_init_ident = get_value_type_init_ident(ident);
     let value_type_ident = get_value_type_ident(ident);
-    let register_value_type_ident = get_register_value_type_ident(ident);
 
     let (impl_generics, where_clause) = if let Some(generics) = generics {
         let (impl_generics, _, where_clause) = generics.split_for_impl();
@@ -467,49 +571,21 @@ pub fn value_type_and_register(
     };
 
     quote! {
-        #[doc(hidden)]
-        static #value_type_init_ident: turbo_tasks::macro_helpers::OnceCell<
-            turbo_tasks::ValueType,
-        > = turbo_tasks::macro_helpers::OnceCell::new();
-        #[doc(hidden)]
-        pub(crate) static #value_type_ident: turbo_tasks::macro_helpers::Lazy<&turbo_tasks::ValueType> =
-            turbo_tasks::macro_helpers::Lazy::new(|| {
-                #value_type_init_ident.get_or_init(|| {
-                    panic!(
-                        concat!(
-                            stringify!(#value_type_ident),
-                            " has not been initialized (this should happen via the generated register function)"
-                        )
-                    )
-                })
-            });
+        turbo_tasks::macro_helpers::turbo_register!(
+            #ty => #value_type_ident: turbo_tasks::ValueType = #new_value_type
+        );
 
-
-        #[doc(hidden)]
-        #[allow(non_snake_case)]
-        pub(crate) fn #register_value_type_ident(
-            global_name: &'static str,
-            init: impl FnOnce(&mut turbo_tasks::ValueType),
-            register_traits: impl FnOnce(turbo_tasks::ValueTypeId),
-        ) {
-            #value_type_init_ident.get_or_init(|| {
-                let mut value = #new_value_type;
-                init(&mut value);
-                value
-            }).register(global_name, register_traits);
-        }
-
+        #[automatically_derived]
         unsafe impl #impl_generics turbo_tasks::VcValueType for #ty #where_clause {
             type Read = #read;
             type CellMode = #cell_mode;
 
             fn get_value_type_id() -> turbo_tasks::ValueTypeId {
-                static ident: turbo_tasks::macro_helpers::Lazy<turbo_tasks::ValueTypeId> =
-                turbo_tasks::macro_helpers::Lazy::new(|| {
-                    turbo_tasks::registry::get_value_type_id(*#value_type_ident)
-                });
+                turbo_tasks::registry::get_value_type_id(&#value_type_ident)
+            }
 
-                *ident
+            fn has_serialization() -> bool {
+                #has_serialization
             }
         }
     }

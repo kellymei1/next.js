@@ -4,67 +4,22 @@ use std::{
     collections::hash_map::Entry,
     fmt::Write as _,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use crossterm::style::{StyledContent, Stylize};
 use owo_colors::{OwoColorize as _, Style};
 use rustc_hash::{FxHashMap, FxHashSet};
 use turbo_rcstr::RcStr;
-use turbo_tasks::{RawVc, ReadRef, TransientInstance, TransientValue, Vc};
+use turbo_tasks::{RawVc, TransientInstance, TransientValue, Vc};
 use turbo_tasks_fs::{FileLinesContent, source_context::get_source_context};
 use turbopack_core::issue::{
-    CapturedIssues, IssueReporter, IssueSeverity, PlainIssue, PlainIssueProcessingPathItem,
-    PlainIssueSource, PlainTraceItem, StyledString,
+    CollectibleIssuesExt, IssueFilter, IssueReporter, IssueSeverity, PlainIssue, PlainIssueSource,
+    PlainTraceItem, StyledString,
 };
 
 use crate::source_context::format_source_context_lines;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct IssueSeverityCliOption(pub IssueSeverity);
-
-impl serde::Serialize for IssueSeverityCliOption {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for IssueSeverityCliOption {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        IssueSeverityCliOption::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-impl clap::ValueEnum for IssueSeverityCliOption {
-    fn value_variants<'a>() -> &'a [Self] {
-        const VARIANTS: [IssueSeverityCliOption; 8] = [
-            IssueSeverityCliOption(IssueSeverity::Bug),
-            IssueSeverityCliOption(IssueSeverity::Fatal),
-            IssueSeverityCliOption(IssueSeverity::Error),
-            IssueSeverityCliOption(IssueSeverity::Warning),
-            IssueSeverityCliOption(IssueSeverity::Hint),
-            IssueSeverityCliOption(IssueSeverity::Note),
-            IssueSeverityCliOption(IssueSeverity::Suggestion),
-            IssueSeverityCliOption(IssueSeverity::Info),
-        ];
-        &VARIANTS
-    }
-
-    fn to_possible_value<'a>(&self) -> Option<clap::builder::PossibleValue> {
-        Some(clap::builder::PossibleValue::new(self.0.as_str()).help(self.0.as_help_str()))
-    }
-}
-
-impl FromStr for IssueSeverityCliOption {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        <IssueSeverityCliOption as clap::ValueEnum>::from_str(s, true).map_err(|s| anyhow!("{}", s))
-    }
-}
 
 fn severity_to_style(severity: IssueSeverity) -> Style {
     match severity {
@@ -87,39 +42,6 @@ fn format_source_content(source: &PlainIssueSource, formatted_issue: &mut String
         let ctx = get_source_context(lines, start.line, start.column, end.line, end.column);
         format_source_context_lines(&ctx, formatted_issue);
     }
-}
-
-fn format_optional_path(
-    path: &Option<Vec<ReadRef<PlainIssueProcessingPathItem>>>,
-    formatted_issue: &mut String,
-) -> Result<()> {
-    if let Some(path) = path {
-        let mut last_context = None;
-        for item in path.iter().rev() {
-            let PlainIssueProcessingPathItem {
-                file_path: ref context,
-                ref description,
-            } = **item;
-            if let Some(context) = context {
-                let option_context = Some(context.clone());
-                if last_context == option_context {
-                    writeln!(formatted_issue, " at {description}")?;
-                } else {
-                    writeln!(
-                        formatted_issue,
-                        " at {} ({})",
-                        context.to_string().bright_blue(),
-                        description
-                    )?;
-                    last_context = option_context;
-                }
-            } else {
-                writeln!(formatted_issue, " at {description}")?;
-                last_context = None;
-            }
-        }
-    }
-    Ok(())
 }
 
 pub fn format_issue(
@@ -171,6 +93,30 @@ pub fn format_issue(
             writeln!(styled_issue, "{path}").unwrap();
         }
     }
+
+    // Render additional sources (e.g., generated code from a loader)
+    for additional in &plain_issue.additional_sources {
+        let desc = &additional.description;
+        let source = &additional.source;
+        match source.range {
+            Some((start, _)) => {
+                writeln!(
+                    styled_issue,
+                    "\n{}:\n{}:{}:{}",
+                    desc,
+                    source.asset.ident,
+                    start.line + 1,
+                    start.column + 1
+                )
+                .unwrap();
+            }
+            None => {
+                writeln!(styled_issue, "\n{}:\n{}", desc, source.asset.ident).unwrap();
+            }
+        }
+        format_source_content(source, &mut styled_issue);
+    }
+
     let traces = &*plain_issue.import_traces;
     if !traces.is_empty() {
         /// Returns the leaf layer name, which is the first present layer name in the trace
@@ -403,7 +349,7 @@ impl SeenIssues {
 ///
 /// The ConsoleUi can be shared and capture issues from multiple sources, with deduplication
 /// operating across all issues.
-#[turbo_tasks::value(shared, serialization = "none", eq = "manual")]
+#[turbo_tasks::value(shared, serialization = "skip", evict = "never", eq = "manual")]
 #[derive(Clone)]
 pub struct ConsoleUi {
     options: LogOptions,
@@ -435,11 +381,10 @@ impl IssueReporter for ConsoleUi {
     #[turbo_tasks::function]
     async fn report_issues(
         &self,
-        issues: TransientInstance<CapturedIssues>,
         source: TransientValue<RawVc>,
         min_failing_severity: IssueSeverity,
     ) -> Result<Vc<bool>> {
-        let issues = &*issues;
+        let issues = source.peek_issues();
         let LogOptions {
             ref current_dir,
             ref project_dir,
@@ -450,7 +395,7 @@ impl IssueReporter for ConsoleUi {
         } = self.options;
         let mut grouped_issues: GroupedIssues = FxHashMap::default();
 
-        let plain_issues = issues.get_plain_issues().await?;
+        let plain_issues = issues.get_plain_issues(IssueFilter::everything()).await?;
         let issues = plain_issues
             .iter()
             .map(|plain_issue| {
@@ -480,7 +425,6 @@ impl IssueReporter for ConsoleUi {
             let context_path =
                 make_relative_to_cwd(&plain_issue.file_path, project_dir, current_dir);
             let stage = plain_issue.stage.to_string();
-            let processing_path = &*plain_issue.processing_path;
             let severity_map = grouped_issues.entry(severity).or_default();
             let category_map = severity_map.entry(stage.clone()).or_default();
             let issues = category_map.entry(context_path.to_string()).or_default();
@@ -507,7 +451,6 @@ impl IssueReporter for ConsoleUi {
                 if !documentation_link.is_empty() {
                     writeln!(&mut styled_issue, "\ndocumentation: {documentation_link}")?;
                 }
-                format_optional_path(processing_path, &mut styled_issue)?;
             }
             issues.push(styled_issue);
         }

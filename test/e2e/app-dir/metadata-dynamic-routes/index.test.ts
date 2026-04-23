@@ -1,6 +1,6 @@
 import { nextTestSetup } from 'e2e-utils'
 import imageSize from 'image-size'
-import { check } from 'next-test-utils'
+import { check, getDistDir } from 'next-test-utils'
 
 const CACHE_HEADERS = {
   NONE: 'no-cache, no-store',
@@ -22,7 +22,7 @@ describe('app dir - metadata dynamic routes', () => {
       const res = await next.fetch('/robots.txt')
       const text = await res.text()
 
-      expect(res.headers.get('content-type')).toBe('text/plain')
+      expect(res.headers.get('content-type')).toContain('text/plain')
       expect(res.headers.get('cache-control')).toBe(CACHE_HEADERS.REVALIDATE)
 
       expect(text).toMatchInlineSnapshot(`
@@ -50,21 +50,21 @@ describe('app dir - metadata dynamic routes', () => {
       expect(res.headers.get('cache-control')).toBe(CACHE_HEADERS.REVALIDATE)
 
       expect(text).toMatchInlineSnapshot(`
-      "<?xml version="1.0" encoding="UTF-8"?>
-      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-      <url>
-      <loc>https://example.com</loc>
-      <lastmod>2021-01-01</lastmod>
-      <changefreq>weekly</changefreq>
-      <priority>0.5</priority>
-      </url>
-      <url>
-      <loc>https://example.com/about</loc>
-      <lastmod>2021-01-01</lastmod>
-      </url>
-      </urlset>
-      "
-    `)
+             "<?xml version="1.0" encoding="UTF-8"?>
+             <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+             <url>
+             <loc>https://example.com</loc>
+             <lastmod>2021-01-01</lastmod>
+             <changefreq>weekly</changefreq>
+             <priority>0.5</priority>
+             </url>
+             <url>
+             <loc>https://example.com/about</loc>
+             <lastmod>2021-01-01</lastmod>
+             </url>
+             </urlset>
+             "
+          `)
     })
 
     it('should support generate multi sitemaps with generateSitemaps', async () => {
@@ -84,6 +84,11 @@ describe('app dir - metadata dynamic routes', () => {
         const { status } = await fetchSitemap(id, false)
         expect(status).toBe(404)
       }
+    })
+
+    it('should 404 for non-existing id from generateImageMetadata', async () => {
+      const res = await next.fetch('/gsp/icon/non-existing-id')
+      expect(res.status).toBe(404)
     })
 
     it('should not throw if client components are imported but not used in sitemap', async () => {
@@ -182,7 +187,9 @@ describe('app dir - metadata dynamic routes', () => {
       const res = await next.fetch('/manifest.webmanifest')
       const json = await res.json()
 
-      expect(res.headers.get('content-type')).toBe('application/manifest+json')
+      expect(res.headers.get('content-type')).toContain(
+        'application/manifest+json'
+      )
       expect(res.headers.get('cache-control')).toBe(CACHE_HEADERS.REVALIDATE)
 
       expect(json).toMatchObject({
@@ -223,12 +230,12 @@ describe('app dir - metadata dynamic routes', () => {
 
       if (isNextDev) {
         await check(async () => {
-          next.hasFile('.next/server/app-paths-manifest.json')
+          next.hasFile(`${getDistDir()}/server/app-paths-manifest.json`)
           return 'success'
         }, /success/)
 
         const appPathsManifest = JSON.parse(
-          await next.readFile('.next/server/app-paths-manifest.json')
+          await next.readFile(`${getDistDir()}/server/app-paths-manifest.json`)
         )
         const entryKeys = Object.keys(appPathsManifest)
         // Only has one route for twitter-image with catch-all routes in dev
@@ -431,8 +438,8 @@ describe('app dir - metadata dynamic routes', () => {
     let twitterImageUrlPattern
     if (isNextDeploy) {
       // absolute urls
-      ogImageUrlPattern = /https:\/\/[\w-]+.vercel.app\/opengraph-image\?/
-      twitterImageUrlPattern = /https:\/\/[\w-]+.vercel.app\/twitter-image\?/
+      ogImageUrlPattern = /https:\/\/[^/]+\/opengraph-image\?/
+      twitterImageUrlPattern = /https:\/\/[^/]+\/twitter-image\?/
     } else if (isNextStart) {
       // configured metadataBase for next start
       ogImageUrlPattern = /https:\/\/mydomain.com\/opengraph-image\?/
@@ -458,21 +465,20 @@ describe('app dir - metadata dynamic routes', () => {
     const $ = await next.render$('/metadata-base/unset')
     const twitterImage = $('meta[name="twitter:image"]').attr('content')
     const ogImages = $('meta[property="og:image"]')
+    const hostPattern = isNextDeploy
+      ? /https?:\/\/[^/]+/
+      : /http:\/\/localhost:\d+/
 
     expect(ogImages.length).toBe(2)
     ogImages.each((_, ogImage) => {
       const ogImageUrl = $(ogImage).attr('content')
-      expect(ogImageUrl).toMatch(
-        isNextDeploy ? /https:\/\/[\w-]+.vercel.app/ : /http:\/\/localhost:\d+/
-      )
+      expect(ogImageUrl).toMatch(hostPattern)
       expect(ogImageUrl).toMatch(
         /\/metadata-base\/unset\/opengraph-image2\/10\d/
       )
     })
 
-    expect(twitterImage).toMatch(
-      isNextDeploy ? /https:\/\/[\w-]+.vercel.app/ : /http:\/\/localhost:\d+/
-    )
+    expect(twitterImage).toMatch(hostPattern)
     expect(twitterImage).toMatch(/\/metadata-base\/unset\/twitter-image\.png/)
   })
 
@@ -497,19 +503,56 @@ describe('app dir - metadata dynamic routes', () => {
 
       // @vercel/og default font should be traced
       const isTraced = fileTrace.files.some((filePath) =>
-        filePath.includes('/noto-sans-v27-latin-regular.ttf')
+        filePath.includes('/Geist-Regular.ttf')
       )
       expect(isTraced).toBe(true)
     })
 
-    it('should statically optimized single image route', async () => {
+    it('should contain generated routes in prerender manifest', async () => {
       const prerenderManifest = JSON.parse(
         await next.readFile('.next/prerender-manifest.json')
       )
-      const dynamicRoutes = Object.keys(prerenderManifest.routes)
-      expect(dynamicRoutes).toContain('/opengraph-image')
-      expect(dynamicRoutes).toContain('/opengraph-image-1ow20b')
-      expect(dynamicRoutes).toContain('/apple-icon')
+      const routes = Object.keys(prerenderManifest.routes).sort()
+
+      // contains the dynamic metadata routes
+      // - /gsp/sitemap/child0.xml
+      // - /gsp/sitemap/child1.xml
+      // - /gsp/sitemap/child2.xml
+      // - /gsp/sitemap/child3.xml
+      expect(routes).toMatchInlineSnapshot(`
+       [
+         "/",
+         "/_global-error",
+         "/_not-found",
+         "/apple-icon",
+         "/blog",
+         "/client-ref-dependency/sitemap.xml",
+         "/gsp",
+         "/gsp/icon/medium",
+         "/gsp/icon/small",
+         "/gsp/sitemap/child0.xml",
+         "/gsp/sitemap/child1.xml",
+         "/gsp/sitemap/child2.xml",
+         "/gsp/sitemap/child3.xml",
+         "/icon",
+         "/lang/sitemap.xml",
+         "/manifest.webmanifest",
+         "/metadata-base/unset",
+         "/metadata-base/unset/opengraph-image2/100",
+         "/metadata-base/unset/opengraph-image2/101",
+         "/metadata-base/unset/twitter-image.png",
+         "/opengraph-image",
+         "/opengraph-image-1ow20b",
+         "/robots.txt",
+         "/sitemap",
+         "/sitemap-image/sitemap.xml",
+         "/sitemap-video/sitemap.xml",
+         "/sitemap.xml",
+         "/static",
+         "/static/opengraph-image-hwkw89.png",
+         "/twitter-image",
+       ]
+      `)
     })
   }
 })

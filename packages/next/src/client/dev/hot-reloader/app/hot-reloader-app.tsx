@@ -8,17 +8,26 @@ import {
   REACT_REFRESH_FULL_RELOAD,
   REACT_REFRESH_FULL_RELOAD_FROM_ERROR,
 } from '../shared'
-import { dispatcher } from 'next/dist/compiled/next-devtools'
+import {
+  dispatcher,
+  getSerializedOverlayState,
+  getSegmentTrieData,
+} from 'next/dist/compiled/next-devtools'
 import { ReplaySsrOnlyErrors } from '../../../../next-devtools/userspace/app/errors/replay-ssr-only-errors'
 import { AppDevOverlayErrorBoundary } from '../../../../next-devtools/userspace/app/app-dev-overlay-error-boundary'
 import { useErrorHandler } from '../../../../next-devtools/userspace/app/errors/use-error-handler'
 import { RuntimeErrorHandler } from '../../runtime-error-handler'
 import { useWebSocketPing } from './web-socket'
-import { HMR_ACTIONS_SENT_TO_BROWSER } from '../../../../server/dev/hot-reloader-types'
-import type {
-  HMR_ACTION_TYPES,
-  TurbopackMsgToBrowser,
+import {
+  HMR_MESSAGE_SENT_TO_BROWSER,
+  HMR_MESSAGE_SENT_TO_SERVER,
 } from '../../../../server/dev/hot-reloader-types'
+import type {
+  HmrMessageSentToBrowser,
+  TurbopackMessageSentToBrowser,
+} from '../../../../server/dev/hot-reloader-types'
+import type { McpErrorStateResponse } from '../../../../shared/lib/mcp-error-types'
+import type { McpPageMetadataResponse } from '../../../../shared/lib/mcp-page-metadata-types'
 import { useUntrackedPathname } from '../../../components/navigation-untracked'
 import reportHmrLatency from '../../report-hmr-latency'
 import { TurbopackHmr } from '../turbopack-hot-reloader-common'
@@ -28,11 +37,19 @@ import {
   type GlobalErrorState,
 } from '../../../components/app-router-instance'
 import { InvariantError } from '../../../../shared/lib/invariant-error'
+import { getOrCreateDebugChannelReadableWriterPair } from '../../debug-channel'
+// TODO: Explicitly import from client.browser (doesn't work with Webpack).
+// eslint-disable-next-line import/no-extraneous-dependencies
+import { createFromReadableStream as createFromReadableStreamBrowser } from 'react-server-dom-webpack/client'
+import { findSourceMapURL } from '../../../app-find-source-map-url'
 
 export interface StaticIndicatorState {
   pathname: string | null
-  appIsrManifest: Record<string, true>
+  appIsrManifest: Record<string, boolean> | null
 }
+
+const createFromReadableStream =
+  createFromReadableStreamBrowser as (typeof import('react-server-dom-webpack/client.browser'))['createFromReadableStream']
 
 let mostRecentCompilationHash: any = null
 let __nextDevClientId = Math.round(Math.random() * 100 + Date.now())
@@ -197,15 +214,11 @@ function tryApplyUpdatesWebpack(sendMessage: (message: string) => void) {
 
 /** Handles messages from the server for the App Router. */
 export function processMessage(
-  obj: HMR_ACTION_TYPES,
+  message: HmrMessageSentToBrowser,
   sendMessage: (message: string) => void,
-  processTurbopackMessage: (msg: TurbopackMsgToBrowser) => void,
+  processTurbopackMessage: (msg: TurbopackMessageSentToBrowser) => void,
   staticIndicatorState: StaticIndicatorState
 ) {
-  if (!('action' in obj)) {
-    return
-  }
-
   function handleErrors(errors: ReadonlyArray<unknown>) {
     // "Massage" webpack messages.
     const formatted = formatWebpackMessages({
@@ -250,27 +263,27 @@ export function processMessage(
     }
   }
 
-  switch (obj.action) {
-    case HMR_ACTIONS_SENT_TO_BROWSER.ISR_MANIFEST: {
+  switch (message.type) {
+    case HMR_MESSAGE_SENT_TO_BROWSER.ISR_MANIFEST: {
       if (process.env.__NEXT_DEV_INDICATOR) {
-        staticIndicatorState.appIsrManifest = obj.data
+        staticIndicatorState.appIsrManifest = message.data
 
-        // handle initial status on receiving manifest
-        // navigation is handled in useEffect for pathname changes
-        // as we'll receive the updated manifest before usePathname
-        // triggers for new value
-        if (
-          staticIndicatorState.pathname &&
-          staticIndicatorState.pathname in obj.data
-        ) {
-          dispatcher.onStaticIndicator(true)
-        } else {
-          dispatcher.onStaticIndicator(false)
-        }
+        // Handle the initial static indicator status on receiving the ISR
+        // manifest. Navigation is handled in an effect inside HotReload for
+        // pathname changes as we'll receive the updated manifest before
+        // usePathname triggers for a new value.
+
+        const isStatic = staticIndicatorState.pathname
+          ? message.data[staticIndicatorState.pathname]
+          : undefined
+
+        dispatcher.onStaticIndicator(
+          isStatic === undefined ? 'pending' : isStatic ? 'static' : 'dynamic'
+        )
       }
       break
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.BUILDING: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.BUILDING: {
       dispatcher.buildingIndicatorShow()
 
       if (process.env.TURBOPACK) {
@@ -282,22 +295,25 @@ export function processMessage(
       }
       break
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.BUILT:
-    case HMR_ACTIONS_SENT_TO_BROWSER.SYNC: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.BUILT:
+    case HMR_MESSAGE_SENT_TO_BROWSER.SYNC: {
       dispatcher.buildingIndicatorHide()
 
-      if (obj.hash) {
-        handleAvailableHash(obj.hash)
+      if (message.hash) {
+        handleAvailableHash(message.hash)
       }
 
-      const { errors, warnings } = obj
+      const { errors, warnings } = message
 
       // Is undefined when it's a 'built' event
-      if ('versionInfo' in obj) dispatcher.onVersionInfo(obj.versionInfo)
-      if ('debug' in obj && obj.debug) dispatcher.onDebugInfo(obj.debug)
-      if ('devIndicator' in obj) dispatcher.onDevIndicator(obj.devIndicator)
-      if ('devToolsConfig' in obj)
-        dispatcher.onDevToolsConfig(obj.devToolsConfig)
+      if ('versionInfo' in message)
+        dispatcher.onVersionInfo(message.versionInfo)
+      if ('debug' in message && message.debug)
+        dispatcher.onDebugInfo(message.debug)
+      if ('devIndicator' in message)
+        dispatcher.onDevIndicator(message.devIndicator)
+      if ('devToolsConfig' in message)
+        dispatcher.onDevToolsConfig(message.devToolsConfig)
 
       const hasErrors = Boolean(errors && errors.length)
       // Compilation with errors (e.g. syntax error or missing modules).
@@ -351,26 +367,26 @@ export function processMessage(
         })
       )
 
-      if (obj.action === HMR_ACTIONS_SENT_TO_BROWSER.BUILT) {
+      if (message.type === HMR_MESSAGE_SENT_TO_BROWSER.BUILT) {
         handleHotUpdate()
       }
       return
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.TURBOPACK_CONNECTED: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.TURBOPACK_CONNECTED: {
       processTurbopackMessage({
-        type: HMR_ACTIONS_SENT_TO_BROWSER.TURBOPACK_CONNECTED,
+        type: HMR_MESSAGE_SENT_TO_BROWSER.TURBOPACK_CONNECTED,
         data: {
-          sessionId: obj.data.sessionId,
+          sessionId: message.data.sessionId,
         },
       })
       break
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.TURBOPACK_MESSAGE: {
-      turbopackHmr!.onTurbopackMessage(obj)
+    case HMR_MESSAGE_SENT_TO_BROWSER.TURBOPACK_MESSAGE: {
+      turbopackHmr!.onTurbopackMessage(message)
       dispatcher.onBeforeRefresh()
       processTurbopackMessage({
-        type: HMR_ACTIONS_SENT_TO_BROWSER.TURBOPACK_MESSAGE,
-        data: obj.data,
+        type: HMR_MESSAGE_SENT_TO_BROWSER.TURBOPACK_MESSAGE,
+        data: message.data,
       })
       if (RuntimeErrorHandler.hadRuntimeError) {
         console.warn(REACT_REFRESH_FULL_RELOAD_FROM_ERROR)
@@ -380,19 +396,19 @@ export function processMessage(
       break
     }
     // TODO-APP: make server component change more granular
-    case HMR_ACTIONS_SENT_TO_BROWSER.SERVER_COMPONENT_CHANGES: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.SERVER_COMPONENT_CHANGES: {
       turbopackHmr?.onServerComponentChanges()
       sendMessage(
         JSON.stringify({
           event: 'server-component-reload-page',
           clientId: __nextDevClientId,
-          hash: obj.hash,
+          hash: message.hash,
         })
       )
 
       // Store the latest hash in a session cookie so that it's sent back to the
       // server with any subsequent requests.
-      document.cookie = `${NEXT_HMR_REFRESH_HASH_COOKIE}=${obj.hash};path=/`
+      document.cookie = `${NEXT_HMR_REFRESH_HASH_COOKIE}=${message.hash};path=/`
 
       if (
         RuntimeErrorHandler.hadRuntimeError ||
@@ -417,7 +433,7 @@ export function processMessage(
 
       return
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.RELOAD_PAGE: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.RELOAD_PAGE: {
       turbopackHmr?.onReloadPage()
       sendMessage(
         JSON.stringify({
@@ -429,31 +445,113 @@ export function processMessage(
       reloading = true
       return window.location.reload()
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.ADDED_PAGE:
-    case HMR_ACTIONS_SENT_TO_BROWSER.REMOVED_PAGE: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.ADDED_PAGE:
+    case HMR_MESSAGE_SENT_TO_BROWSER.REMOVED_PAGE: {
       turbopackHmr?.onPageAddRemove()
       // TODO-APP: potentially only refresh if the currently viewed page was added/removed.
       return publicAppRouterInstance.hmrRefresh()
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.SERVER_ERROR: {
-      const { errorJSON } = obj
+    case HMR_MESSAGE_SENT_TO_BROWSER.SERVER_ERROR: {
+      const { errorJSON } = message
       if (errorJSON) {
-        const { message, stack } = JSON.parse(errorJSON)
-        const error = new Error(message)
-        error.stack = stack
+        const errorObject = JSON.parse(errorJSON)
+        const error = new Error(errorObject.message)
+        error.stack = errorObject.stack
         handleErrors([error])
       }
       return
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.DEV_PAGES_MANIFEST_UPDATE: {
+    case HMR_MESSAGE_SENT_TO_BROWSER.DEV_PAGES_MANIFEST_UPDATE: {
       return
     }
-    case HMR_ACTIONS_SENT_TO_BROWSER.DEVTOOLS_CONFIG: {
-      dispatcher.onDevToolsConfig(obj.data)
+    case HMR_MESSAGE_SENT_TO_BROWSER.DEVTOOLS_CONFIG: {
+      dispatcher.onDevToolsConfig(message.data)
       return
     }
+    case HMR_MESSAGE_SENT_TO_BROWSER.REACT_DEBUG_CHUNK: {
+      const { requestId, chunk } = message
+      const { writer } = getOrCreateDebugChannelReadableWriterPair(requestId)
+
+      if (chunk) {
+        writer.ready.then(() => writer.write(chunk)).catch(console.error)
+      } else {
+        // A null chunk signals that no more chunks will be sent, which allows
+        // us to close the writer.
+        // TODO: Revisit this cleanup logic when we integrate the return channel
+        // that keeps the connection open to be able to lazily retrieve debug
+        // objects.
+        writer.ready.then(() => writer.close()).catch(console.error)
+      }
+
+      return
+    }
+    case HMR_MESSAGE_SENT_TO_BROWSER.REQUEST_CURRENT_ERROR_STATE: {
+      const errorState = getSerializedOverlayState()
+      const response: McpErrorStateResponse = {
+        event: HMR_MESSAGE_SENT_TO_SERVER.MCP_ERROR_STATE_RESPONSE,
+        requestId: message.requestId,
+        errorState,
+        url: window.location.href,
+      }
+      sendMessage(JSON.stringify(response))
+      return
+    }
+    case HMR_MESSAGE_SENT_TO_BROWSER.REQUEST_PAGE_METADATA: {
+      const segmentTrieData = getSegmentTrieData()
+      const response: McpPageMetadataResponse = {
+        event: HMR_MESSAGE_SENT_TO_SERVER.MCP_PAGE_METADATA_RESPONSE,
+        requestId: message.requestId,
+        segmentTrieData,
+        url: window.location.href,
+      }
+      sendMessage(JSON.stringify(response))
+      return
+    }
+    case HMR_MESSAGE_SENT_TO_BROWSER.CACHE_INDICATOR: {
+      dispatcher.onCacheIndicator(message.state)
+      return
+    }
+    case HMR_MESSAGE_SENT_TO_BROWSER.ERRORS_TO_SHOW_IN_BROWSER: {
+      createFromReadableStream<{
+        errors: Error[]
+        errorCodes: Map<Error, string>
+      }>(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(message.serializedErrors)
+            controller.close()
+          },
+        }),
+        { findSourceMapURL }
+      ).then(
+        ({ errors, errorCodes }) => {
+          for (const error of errors) {
+            const code = errorCodes.get(error)
+            if (code !== undefined) {
+              Object.defineProperty(error, '__NEXT_ERROR_CODE', {
+                value: code,
+                enumerable: false,
+                configurable: true,
+              })
+            }
+            console.error(error)
+          }
+        },
+        (err) => {
+          console.error(
+            new Error('Failed to deserialize errors.', { cause: err })
+          )
+        }
+      )
+      return
+    }
+    case HMR_MESSAGE_SENT_TO_BROWSER.MIDDLEWARE_CHANGES:
+    case HMR_MESSAGE_SENT_TO_BROWSER.CLIENT_CHANGES:
+    case HMR_MESSAGE_SENT_TO_BROWSER.SERVER_ONLY_CHANGES:
+      // These action types are handled in src/client/page-bootstrap.ts
+      break
     default: {
-      obj satisfies never
+      message satisfies never
     }
   }
 }
@@ -489,10 +587,14 @@ export default function HotReload({
 
       staticIndicatorState.pathname = pathname
 
-      if (pathname && pathname in staticIndicatorState.appIsrManifest) {
-        dispatcher.onStaticIndicator(true)
-      } else {
-        dispatcher.onStaticIndicator(false)
+      if (staticIndicatorState.appIsrManifest) {
+        const isStatic = pathname
+          ? staticIndicatorState.appIsrManifest[pathname]
+          : undefined
+
+        dispatcher.onStaticIndicator(
+          isStatic === undefined ? 'pending' : isStatic ? 'static' : 'dynamic'
+        )
       }
     }, [pathname, staticIndicatorState])
   }

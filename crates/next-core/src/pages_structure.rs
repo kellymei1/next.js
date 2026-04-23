@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tracing::Instrument;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{OptionVcExt, ResolvedVc, TryJoinIterExt, Vc};
+use turbo_tasks::{OptionVcExt, ResolvedVc, TryJoinIterExt, ValueToStringRef, Vc};
 use turbo_tasks_fs::{
     DirectoryContent, DirectoryEntry, FileSystemEntryType, FileSystemPath, FileSystemPathOption,
 };
@@ -106,11 +106,11 @@ pub async fn find_pages_structure(
     page_extensions: Vc<Vec<RcStr>>,
     next_mode: Vc<crate::mode::NextMode>,
 ) -> Result<Vc<PagesStructure>> {
-    let pages_root = project_root.join("pages")?.realpath().owned().await?;
+    let pages_root = project_root.join("pages")?.realpath().await?;
     let pages_root = if *pages_root.get_type().await? == FileSystemEntryType::Directory {
         Some(pages_root)
     } else {
-        let src_pages_root = project_root.join("src/pages")?.realpath().owned().await?;
+        let src_pages_root = project_root.join("src/pages")?.realpath().await?;
         if *src_pages_root.get_type().await? == FileSystemEntryType::Directory {
             Some(src_pages_root)
         } else {
@@ -209,7 +209,6 @@ async fn get_pages_structure_for_root_directory(
                                 get_pages_structure_for_directory(
                                     dir_project_path.clone(),
                                     next_router_path.join(name)?,
-                                    1,
                                     page_extensions,
                                 )
                                 .to_resolved()
@@ -222,7 +221,6 @@ async fn get_pages_structure_for_root_directory(
                                 get_pages_structure_for_directory(
                                     dir_project_path.clone(),
                                     next_router_path.join(name)?,
-                                    1,
                                     page_extensions,
                                 ),
                             ));
@@ -271,17 +269,14 @@ async fn get_pages_structure_for_root_directory(
 
     // Only skip user pages routes during build mode when there are no user pages
     let should_create_pages_entries = has_user_pages || next_mode.await?.is_development();
+    let next_package = get_next_package(project_root.clone()).await?;
 
     let app_item = {
         let app_router_path = next_router_path.join("_app")?;
         PagesStructureItem::new(
             pages_path.join("_app")?,
             page_extensions,
-            Some(
-                get_next_package(project_root.clone())
-                    .await?
-                    .join("app.js")?,
-            ),
+            Some(next_package.join("app.js")?),
             app_router_path.clone(),
             app_router_path,
         )
@@ -292,11 +287,7 @@ async fn get_pages_structure_for_root_directory(
         PagesStructureItem::new(
             pages_path.join("_document")?,
             page_extensions,
-            Some(
-                get_next_package(project_root.clone())
-                    .await?
-                    .join("document.js")?,
-            ),
+            Some(next_package.join("document.js")?),
             document_router_path.clone(),
             document_router_path,
         )
@@ -307,11 +298,7 @@ async fn get_pages_structure_for_root_directory(
         PagesStructureItem::new(
             pages_path.join("_error")?,
             page_extensions,
-            Some(
-                get_next_package(project_root.clone())
-                    .await?
-                    .join("error.js")?,
-            ),
+            Some(next_package.join("dist/pages/_error.js")?),
             error_router_path.clone(),
             error_router_path,
         )
@@ -336,13 +323,12 @@ async fn get_pages_structure_for_root_directory(
 async fn get_pages_structure_for_directory(
     project_path: FileSystemPath,
     next_router_path: FileSystemPath,
-    position: u32,
     page_extensions: Vc<Vec<RcStr>>,
 ) -> Result<Vc<PagesDirectoryStructure>> {
-    let span = {
-        let path = project_path.value_to_string().await?.to_string();
-        tracing::info_span!("analyse pages structure", name = path)
-    };
+    let span = tracing::info_span!(
+        "analyze pages structure",
+        name = display(project_path.to_string_ref().await?)
+    );
     async move {
         let page_extensions_raw = &*page_extensions.await?;
 
@@ -379,7 +365,6 @@ async fn get_pages_structure_for_directory(
                             get_pages_structure_for_directory(
                                 dir_project_path.clone(),
                                 next_router_path.join(name)?,
-                                position + 1,
                                 page_extensions,
                             ),
                         ));

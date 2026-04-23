@@ -1,6 +1,7 @@
-import { getFullUrl, waitFor } from 'next-test-utils'
+import { debugPrint, getFullUrl } from 'next-test-utils'
 import os from 'os'
 import {
+  Permissions,
   Playwright,
   PlaywrightNavigationWaitUntil,
 } from './browsers/playwright'
@@ -48,6 +49,7 @@ if (typeof afterAll === 'function') {
 }
 
 export interface WebdriverOptions {
+  permissions?: Permissions
   /**
    * whether to wait for React hydration to finish
    */
@@ -70,6 +72,10 @@ export interface WebdriverOptions {
    * @returns
    */
   beforePageLoad?: (page: Page) => void | Promise<void>
+  /**
+   * @see {@link https://playwright.dev/docs/api/class-page#page-set-extra-http-headers Playwright.Page.setExtraHTTPHeaders}
+   */
+  extraHTTPHeaders?: Record<string, string>
   /**
    * browser locale
    */
@@ -114,8 +120,10 @@ export default async function webdriver(
     retryWaitHydration,
     disableCache,
     beforePageLoad,
+    extraHTTPHeaders,
     locale,
     disableJavaScript,
+    permissions,
     ignoreHTTPSErrors,
     headless,
     cpuThrottleRate,
@@ -136,7 +144,8 @@ export default async function webdriver(
     Boolean(ignoreHTTPSErrors),
     // allow headless to be overwritten for a particular test
     typeof headless !== 'undefined' ? headless : !!process.env.HEADLESS,
-    userAgent
+    userAgent,
+    permissions
   )
   ;(global as any).browserName = browserName
 
@@ -146,22 +155,23 @@ export default async function webdriver(
     isBrowserStack ? deviceIP : 'localhost'
   )
 
-  console.log(`\n> Loading browser with ${fullUrl}\n`)
+  debugPrint(`Loading browser with ${fullUrl}`)
 
   await browser.loadPage(fullUrl, {
     disableCache,
     cpuThrottleRate,
     beforePageLoad,
+    extraHTTPHeaders,
     pushErrorAsConsoleLog,
     waitUntil,
   })
-  console.log(`\n> Loaded browser with ${fullUrl}\n`)
+  debugPrint(`Loaded browser with ${fullUrl}`)
 
   browserTeardown.push(browser.close.bind(browser))
 
   // Wait for application to hydrate
   if (!disableJavaScript && waitHydration) {
-    console.log(`\n> Waiting hydration for ${fullUrl}\n`)
+    debugPrint(`Waiting hydration for ${fullUrl}`)
 
     const checkHydrated = async () => {
       await browser.eval(() => {
@@ -207,16 +217,8 @@ export default async function webdriver(
       }
     }
 
-    console.log(`\n> Hydration complete for ${fullUrl}\n`)
+    debugPrint(`Hydration complete for ${fullUrl}`)
   }
 
-  // This is a temporary workaround for turbopack starting watching too late.
-  // So we delay file changes to give it some time
-  // to connect the WebSocket and start watching.
-  // TODO: Is this still needed? Can we wait in a more useful way, like a socket connection event?
-  if (process.env.IS_TURBOPACK_TEST && process.env.TURBOPACK_DEV) {
-    console.log(`\n> Waiting for for turbopack watcher to start`)
-    await waitFor(1000)
-  }
   return browser
 }

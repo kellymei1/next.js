@@ -6,20 +6,17 @@ import type {
 } from '../../../build/swc/types'
 
 import { bold, green, magenta, red } from '../../../lib/picocolors'
-import isInternal from '../is-internal'
-import {
-  decodeMagicIdentifier,
-  MAGIC_IDENTIFIER_REGEX,
-} from '../magic-identifier'
+import { deobfuscateText } from '../magic-identifier'
 import type { EntryKey } from './entry-key'
 import * as Log from '../../../build/output/log'
 import type { NextConfigComplete } from '../../../server/config-shared'
-import loadJsConfig from '../../../build/load-jsconfig'
 
 type IssueKey = `${Issue['severity']}-${Issue['filePath']}-${string}-${string}`
 export type IssuesMap = Map<IssueKey, Issue>
 export type EntryIssuesMap = Map<EntryKey, IssuesMap>
 export type TopLevelIssuesMap = IssuesMap
+
+const VERBOSE_ISSUES = !!process.env.NEXT_TURBOPACK_VERBOSE_ISSUES
 
 /**
  * An error generated from emitted Turbopack issues. This can include build
@@ -51,14 +48,6 @@ export function getIssueKey(issue: Issue): IssueKey {
   return `${issue.severity}-${issue.filePath}-${JSON.stringify(
     issue.title
   )}-${JSON.stringify(issue.description)}`
-}
-
-export async function getTurbopackJsConfig(
-  dir: string,
-  nextConfig: NextConfigComplete
-) {
-  const { jsConfig } = await loadJsConfig(dir, nextConfig)
-  return jsConfig ?? { compilerOptions: {} }
 }
 
 export function processIssues(
@@ -102,8 +91,15 @@ export function processIssues(
   }
 }
 
+function formatFilePath(filePath: string): string {
+  return filePath
+    .replace('[project]/', './')
+    .replaceAll('/./', '/')
+    .replace('\\\\?\\', '')
+}
+
 export function formatIssue(issue: Issue) {
-  const { filePath, title, description, source, importTraces } = issue
+  const { filePath, title, description, detail, source, importTraces } = issue
   let { documentationLink } = issue
   const formattedTitle = renderStyledStringToErrorAnsi(title).replace(
     /\n/g,
@@ -118,10 +114,7 @@ export function formatIssue(issue: Issue) {
     documentationLink = 'https://nextjs.org/docs/messages/module-not-found'
   }
 
-  const formattedFilePath = filePath
-    .replace('[project]/', './')
-    .replaceAll('/./', '/')
-    .replace('\\\\?\\', '')
+  const formattedFilePath = formatFilePath(filePath)
 
   let message = ''
 
@@ -137,31 +130,8 @@ export function formatIssue(issue: Issue) {
   }
   message += '\n'
 
-  if (
-    source?.range &&
-    source.source.content &&
-    // ignore Next.js/React internals, as these can often be huge bundled files.
-    !isInternal(filePath)
-  ) {
-    const { start, end } = source.range
-    const { codeFrameColumns } =
-      require('next/dist/compiled/babel/code-frame') as typeof import('next/dist/compiled/babel/code-frame')
-
-    message +=
-      codeFrameColumns(
-        source.source.content,
-        {
-          start: {
-            line: start.line + 1,
-            column: start.column + 1,
-          },
-          end: {
-            line: end.line + 1,
-            column: end.column + 1,
-          },
-        },
-        { forceColor: true }
-      ).trim() + '\n\n'
+  if (issue.codeFrame) {
+    message += issue.codeFrame.trimEnd() + '\n\n'
   }
 
   if (description) {
@@ -172,16 +142,29 @@ export function formatIssue(issue: Issue) {
       message +=
         "To use Next.js' built-in Sass support, you first need to install `sass`.\n"
       message += 'Run `npm i sass` or `yarn add sass` inside your workspace.\n'
-      message += '\nLearn more: https://nextjs.org/docs/messages/install-sass'
+      message += '\nLearn more: https://nextjs.org/docs/messages/install-sass\n'
     } else {
       message += renderStyledStringToErrorAnsi(description) + '\n\n'
     }
   }
 
-  // TODO: make it possible to enable this for debugging, but not in tests.
-  // if (detail) {
-  //   message += renderStyledStringToErrorAnsi(detail) + '\n\n'
-  // }
+  // TODO: make it easier to enable this for debugging
+  if (VERBOSE_ISSUES && detail) {
+    message += renderStyledStringToErrorAnsi(detail) + '\n\n'
+  }
+
+  // Render additional sources (e.g., generated code from a loader)
+  for (const additional of issue.additionalSources ?? []) {
+    if (additional.codeFrame) {
+      const additionalFilePath = formatFilePath(
+        additional.source.source.filePath
+      )
+      const loc = additional.source.range
+        ? `:${additional.source.range.start.line + 1}:${additional.source.range.start.column + 1}`
+        : ''
+      message += `${additional.description}:\n${additionalFilePath}${loc}\n${additional.codeFrame.trimEnd()}\n\n`
+    }
+  }
 
   if (importTraces?.length) {
     // This is the same logic as in turbopack/crates/turbopack-cli-utils/src/issue.rs
@@ -297,23 +280,20 @@ function isNodeModulesIssue(issue: Issue): boolean {
 }
 
 export function renderStyledStringToErrorAnsi(string: StyledString): string {
-  function decodeMagicIdentifiers(str: string): string {
-    return str.replaceAll(MAGIC_IDENTIFIER_REGEX, (ident) => {
-      try {
-        return magenta(`{${decodeMagicIdentifier(ident)}}`)
-      } catch (e) {
-        return magenta(`{${ident} (decoding failed: ${e})}`)
-      }
-    })
+  function applyDeobfuscation(str: string): string {
+    // Use shared deobfuscate function and apply magenta color to identifiers
+    const deobfuscated = deobfuscateText(str)
+    // Color any {...} wrapped identifiers with magenta
+    return deobfuscated.replace(/\{([^}]+)\}/g, (match) => magenta(match))
   }
 
   switch (string.type) {
     case 'text':
-      return decodeMagicIdentifiers(string.value)
+      return applyDeobfuscation(string.value)
     case 'strong':
-      return bold(red(decodeMagicIdentifiers(string.value)))
+      return bold(red(applyDeobfuscation(string.value)))
     case 'code':
-      return green(decodeMagicIdentifiers(string.value))
+      return green(applyDeobfuscation(string.value))
     case 'line':
       return string.value.map(renderStyledStringToErrorAnsi).join('')
     case 'stack':
@@ -323,8 +303,8 @@ export function renderStyledStringToErrorAnsi(string: StyledString): string {
   }
 }
 
-export function isPersistentCachingEnabled(
+export function isFileSystemCacheEnabledForDev(
   config: NextConfigComplete
 ): boolean {
-  return config.experimental?.turbopackPersistentCaching || false
+  return config.experimental?.turbopackFileSystemCacheForDev || false
 }

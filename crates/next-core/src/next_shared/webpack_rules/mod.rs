@@ -1,7 +1,9 @@
 use std::{collections::BTreeSet, str::FromStr};
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
+use bincode::{Decode, Encode};
+use serde::Deserialize;
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{NonLocalValue, OperationValue, ResolvedVc, TaskInput, Vc, trace::TraceRawVcs};
 use turbo_tasks_fs::FileSystemPath;
@@ -9,16 +11,13 @@ use turbopack::module_options::{
     WebpackLoaderBuiltinConditionSet, WebpackLoaderBuiltinConditionSetMatch, WebpackLoadersOptions,
 };
 use turbopack_core::{
-    issue::{Issue, IssueExt, IssueSeverity, IssueStage, OptionStyledString, StyledString},
+    issue::{Issue, IssueSeverity, IssueStage, StyledString},
     resolve::{ExternalTraced, ExternalType, options::ImportMapping},
 };
 
 use crate::{
     next_config::NextConfig,
-    next_shared::webpack_rules::{
-        babel::{detect_likely_babel_loader, get_babel_loader_rules},
-        sass::{detect_likely_sass_loader, get_sass_loader_rules},
-    },
+    next_shared::webpack_rules::{babel::get_babel_loader_rules, sass::get_sass_loader_rules},
 };
 
 pub(crate) mod babel;
@@ -26,12 +25,11 @@ pub(crate) mod sass;
 
 /// Built-in conditions provided by the Next.js Turbopack integration for configuring webpack
 /// loaders. These can be used in the `next.config.js` `turbopack.rules` section.
-///
-/// These are different from than the user-configurable "conditions" field.
 //
 // Note: If you add a field here, make sure to also add it in:
 // - The typescript definition in `packages/next/src/server/config-shared.ts`
 // - The zod schema in `packages/next/src/server/config-schema.ts`
+// - The documentation in `docs/01-app/03-api-reference/05-config/01-next-config-js/turbopack.mdx`
 //
 // Note: Sets of conditions could be stored more efficiently as a bitset, but it's probably not used
 // in enough places for it to matter.
@@ -45,16 +43,15 @@ pub(crate) mod sass;
     Ord,
     Hash,
     Deserialize,
-    Serialize,
     TaskInput,
     TraceRawVcs,
     NonLocalValue,
     OperationValue,
+    Encode,
+    Decode,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum WebpackLoaderBuiltinCondition {
-    /// Treated as always-present.
-    Default,
     /// Client-side code.
     Browser,
     /// Code in `node_modules` that should typically not be modified by webpack loaders.
@@ -74,7 +71,6 @@ pub enum WebpackLoaderBuiltinCondition {
 impl WebpackLoaderBuiltinCondition {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Default => "default",
             Self::Browser => "browser",
             Self::Foreign => "foreign",
             Self::Development => "development",
@@ -90,7 +86,6 @@ impl FromStr for WebpackLoaderBuiltinCondition {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "default" => Ok(Self::Default),
             "browser" => Ok(Self::Browser),
             "foreign" => Ok(Self::Foreign),
             "development" => Ok(Self::Development),
@@ -148,73 +143,18 @@ pub async fn webpack_loader_options(
     next_config: Vc<NextConfig>,
     builtin_conditions: BTreeSet<WebpackLoaderBuiltinCondition>,
 ) -> Result<Vc<OptionWebpackLoadersOptions>> {
-    let mut rules = next_config
-        .webpack_rules(project_path.clone())
-        .owned()
-        .await?;
+    let user_rules = next_config.webpack_rules(project_path.clone()).await?;
+    let mut rules = (*user_rules).clone();
 
-    let config_file_path = async || project_path.join(&next_config.await?.config_file_name);
+    rules.append(&mut get_sass_loader_rules(&project_path, next_config, &user_rules).await?);
+    rules.append(
+        &mut get_babel_loader_rules(&project_path, next_config, &builtin_conditions, &user_rules)
+            .await?,
+    );
 
-    let use_builtin_sass = next_config
-        .experimental_turbopack_use_builtin_sass()
-        .await?;
-    if use_builtin_sass.unwrap_or(true) {
-        if use_builtin_sass.is_none()
-            && let Some(glob) = detect_likely_sass_loader(&rules).await?
-        {
-            ManuallyConfiguredBuiltinLoaderIssue {
-                glob,
-                loader: rcstr!("sass-loader"),
-                config_key: rcstr!("experimental.turbopackUseBuiltinSass"),
-                config_file_path: config_file_path().await?,
-            }
-            .resolved_cell()
-            .emit()
-        }
-        rules.append(&mut get_sass_loader_rules(next_config.sass_config()).await?);
-    }
-
-    // TODO: Enable this warning after babel configuration is fixed
-    // (https://github.com/vercel/next.js/pull/82676) and the react-compiler logic is moved into
-    // here. React-compiler is currently configured in JS before it gets to us, which could trigger
-    // false-positives.
-    let use_builtin_babel = next_config
-        .experimental_turbopack_use_builtin_babel()
-        .await?;
-    if !builtin_conditions.contains(&WebpackLoaderBuiltinCondition::Foreign)
-        && use_builtin_babel.unwrap_or(true)
-    {
-        if use_builtin_babel.is_none()
-            && let Some(glob) = detect_likely_babel_loader(&rules).await?
-        {
-            let _ = glob;
-            // TODO: Enable this warning after babel configuration is fixed
-            // (https://github.com/vercel/next.js/pull/82676) and the react-compiler logic is moved into
-            // here. React-compiler is currently configured in JS before it gets to us, which could
-            // trigger false-positives.
-            /*
-            ManuallyConfiguredBuiltinLoaderIssue {
-                glob,
-                loader: rcstr!("babel-loader"),
-                disable_builtin_config_key: rcstr!("experimental.turbopackUseBuiltinBabel"),
-                config_file_path: config_file_path().await?,
-            }
-            .resolved_cell()
-            .emit()
-            */
-        }
-        rules.append(&mut get_babel_loader_rules(project_path.clone()).await?);
-    }
-
-    if rules.is_empty() {
-        return Ok(Vc::cell(None));
-    }
-
-    let conditions = next_config.webpack_conditions().to_resolved().await?;
     Ok(Vc::cell(Some(
         WebpackLoadersOptions {
             rules: ResolvedVc::cell(rules),
-            conditions,
             loader_runner_package: Some(loader_runner_package_mapping().to_resolved().await?),
             builtin_conditions: NextWebpackLoaderBuiltinConditionSet::new(builtin_conditions)
                 .to_resolved()
@@ -238,61 +178,54 @@ fn loader_runner_package_mapping() -> Result<Vc<ImportMapping>> {
 }
 
 #[turbo_tasks::value]
-struct ManuallyConfiguredBuiltinLoaderIssue {
+pub struct ManuallyConfiguredBuiltinLoaderIssue {
     glob: RcStr,
     loader: RcStr,
     config_key: RcStr,
     config_file_path: FileSystemPath,
 }
 
+#[async_trait]
 #[turbo_tasks::value_impl]
 impl Issue for ManuallyConfiguredBuiltinLoaderIssue {
     fn severity(&self) -> IssueSeverity {
         IssueSeverity::Warning
     }
 
-    #[turbo_tasks::function]
-    fn file_path(&self) -> Vc<FileSystemPath> {
-        self.config_file_path.clone().cell()
+    async fn file_path(&self) -> Result<FileSystemPath> {
+        Ok(self.config_file_path.clone())
     }
 
-    #[turbo_tasks::function]
-    fn stage(&self) -> Vc<IssueStage> {
-        IssueStage::Config.cell()
+    fn stage(&self) -> IssueStage {
+        IssueStage::Config
     }
 
-    #[turbo_tasks::function]
-    fn title(&self) -> Vc<StyledString> {
-        StyledString::Line(vec![
+    async fn title(&self) -> Result<StyledString> {
+        Ok(StyledString::Line(vec![
             StyledString::Text(rcstr!("Identified a likely manual configuration of ")),
             StyledString::Code(self.loader.clone()),
             StyledString::Text(rcstr!(" for paths matching ")),
             StyledString::Code(self.glob.clone()),
-        ])
-        .cell()
+        ]))
     }
 
-    #[turbo_tasks::function]
-    fn description(&self) -> Vc<OptionStyledString> {
-        Vc::cell(Some(
-            StyledString::Stack(vec![
-                StyledString::Text(rcstr!(
-                    "Next.js includes a built-in version of this loader that is configured \
-                     automatically. You may not need to configure this."
-                )),
-                StyledString::Line(vec![
-                    StyledString::Text(rcstr!("You can silence this warning by setting ")),
-                    StyledString::Code(self.config_key.clone()),
-                    StyledString::Text(rcstr!(" in ")),
-                    StyledString::Text(self.config_file_path.path.clone()),
-                    StyledString::Text(rcstr!(" to ")),
-                    StyledString::Code(rcstr!("true")),
-                    StyledString::Text(rcstr!(" (to silence this warning) or ")),
-                    StyledString::Code(rcstr!("false")),
-                    StyledString::Text(rcstr!(" (to disable the default built-in loader)")),
-                ]),
-            ])
-            .resolved_cell(),
-        ))
+    async fn description(&self) -> Result<Option<StyledString>> {
+        Ok(Some(StyledString::Stack(vec![
+            StyledString::Text(rcstr!(
+                "Next.js includes a built-in version of this loader that is configured \
+                 automatically. You may not need to configure this."
+            )),
+            StyledString::Line(vec![
+                StyledString::Text(rcstr!("You can silence this warning by setting ")),
+                StyledString::Code(self.config_key.clone()),
+                StyledString::Text(rcstr!(" in ")),
+                StyledString::Text(self.config_file_path.path.clone()),
+                StyledString::Text(rcstr!(" to ")),
+                StyledString::Code(rcstr!("true")),
+                StyledString::Text(rcstr!(" (to silence this warning) or ")),
+                StyledString::Code(rcstr!("false")),
+                StyledString::Text(rcstr!(" (to disable the default built-in loader)")),
+            ]),
+        ])))
     }
 }

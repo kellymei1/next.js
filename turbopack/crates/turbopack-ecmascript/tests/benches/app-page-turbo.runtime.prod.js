@@ -24267,7 +24267,7 @@ Read more: https://nextjs.org/docs/messages/failed-to-find-server-action`),
               injectedJS: Q,
             })
           : [],
-        ev = 'unstable_runtime' === (ef ? ef.unstable_prefetch : void 0),
+        ev = 'unstable_runtime' === (ef ? ef.unstable_instant : void 0),
         [eb, e_] =
           m && J
             ? await rg({
@@ -28191,7 +28191,7 @@ ${e}`),
       }
       if (t.renderOpts.dev) {
         let e = rT(t.renderOpts.dir || '', null == n ? void 0 : n[1])
-        if (t.renderOpts.devtoolSegmentExplorer && e) {
+        if (e) {
           let n = t.componentMod.SegmentViewNode
           r = (0, u.jsx)(
             n,

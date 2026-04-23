@@ -63,8 +63,6 @@ export async function handleRouteType({
   route: PageRoute | AppRoute
   manifestLoader: TurbopackManifestLoader
 }) {
-  const shouldCreateWebpackStats = process.env.TURBOPACK_STATS != null
-
   switch (route.type) {
     case 'page': {
       const serverKey = getEntryKey('pages', 'server', page)
@@ -82,9 +80,7 @@ export async function handleRouteType({
       await manifestLoader.loadFontManifest('/_app', 'pages')
       await manifestLoader.loadFontManifest(page, 'pages')
 
-      if (shouldCreateWebpackStats) {
-        await manifestLoader.loadWebpackStats(page, 'pages')
-      }
+      await manifestLoader.loadSriManifest(page, 'pages')
 
       break
     }
@@ -109,25 +105,24 @@ export async function handleRouteType({
         manifestLoader.deleteMiddlewareManifest(key)
       }
 
-      await manifestLoader.loadAppBuildManifest(page)
-      await manifestLoader.loadBuildManifest(page, 'app')
-      await manifestLoader.loadAppPathsManifest(page)
-      await manifestLoader.loadActionManifest(page)
-      await manifestLoader.loadFontManifest(page, 'app')
+      manifestLoader.loadBuildManifest(page, 'app')
+      manifestLoader.loadAppPathsManifest(page)
+      manifestLoader.loadActionManifest(page)
+      manifestLoader.loadFontManifest(page, 'app')
 
-      if (shouldCreateWebpackStats) {
-        await manifestLoader.loadWebpackStats(page, 'app')
-      }
+      manifestLoader.loadSriManifest(page, 'app')
 
       break
     }
     case 'app-route': {
       const key = getEntryKey('app', 'server', page)
 
-      await manifestLoader.loadAppPathsManifest(page)
+      manifestLoader.loadAppPathsManifest(page)
 
-      const middlewareManifestWritten =
-        await manifestLoader.loadMiddlewareManifest(page, 'app')
+      const middlewareManifestWritten = manifestLoader.loadMiddlewareManifest(
+        page,
+        'app'
+      )
 
       if (!middlewareManifestWritten) {
         manifestLoader.deleteMiddlewareManifest(key)

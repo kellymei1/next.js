@@ -1,4 +1,5 @@
 import { nextTestSetup } from 'e2e-utils'
+import { listClientChunks } from 'next-test-utils'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -19,9 +20,7 @@ describe('css-server-chunks', () => {
     expect((await next.fetch('/pages')).status).toBe(200)
 
     let clientChunks = (
-      await fs.readdir(path.join(next.testDir, '.next', 'static'), {
-        recursive: true,
-      })
+      await listClientChunks(path.join(next.testDir, next.distDir))
     ).filter((f) => f.endsWith('.js') || f.endsWith('.css'))
     expect(clientChunks).toEqual(
       expect.arrayContaining([expect.stringMatching(/\.css$/)])
@@ -29,11 +28,12 @@ describe('css-server-chunks', () => {
 
     let serverChunks = (
       await Promise.all(
-        ['.next/server/app', '.next/server/pages'].map((d) =>
-          fs.readdir(path.join(next.testDir, d), {
-            recursive: true,
-            encoding: 'utf8',
-          })
+        [`${next.distDir}/server/app`, `${next.distDir}/server/pages`].map(
+          (d) =>
+            fs.readdir(path.join(next.testDir, d), {
+              recursive: true,
+              encoding: 'utf8',
+            })
         )
       )
     )

@@ -1,7 +1,7 @@
 import { nextTestSetup } from 'e2e-utils'
 
 describe('metadata-invalid-image-file', () => {
-  const { next, isTurbopack, isNextDev, skipped } = nextTestSetup({
+  const { next, isTurbopack, isNextDev, skipped, isRspack } = nextTestSetup({
     files: __dirname,
     skipDeployment: true,
     skipStart: true,
@@ -33,6 +33,10 @@ describe('metadata-invalid-image-file', () => {
       // `next build` should fail
       if (isTurbopack) {
         expect(next.cliOutput).toContain('Build error occurred')
+      } else if (isRspack) {
+        expect(next.cliOutput).toContain(
+          'Build failed because of Rspack errors'
+        )
       } else {
         expect(next.cliOutput).toContain(
           'Build failed because of webpack errors'

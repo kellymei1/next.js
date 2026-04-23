@@ -19,7 +19,9 @@ use crate::{
     base_loader_tree::{AppDirModuleType, BaseLoaderTreeBuilder},
     next_app::{
         AppPage,
-        metadata::{get_content_type, image::dynamic_image_metadata_source},
+        metadata::{
+            fill_static_metadata_segment, get_content_type, image::dynamic_image_metadata_source,
+        },
     },
     next_image::module::{BlurPlaceholderMode, StructuredImageModuleType},
 };
@@ -184,9 +186,16 @@ impl AppPageLoaderTreeBuilder {
                 let identifier = magic_identifier::mangle(&format!("{name} #{i}"));
                 let inner_module_id = format!("METADATA_{i}");
 
-                self.base
-                    .imports
-                    .push(format!("import {identifier} from \"{inner_module_id}\";").into());
+                // This should use the same importing mechanism as create_module_tuple_code, so that
+                // the relative order of items is retained (which isn't the case
+                // when mixing ESM imports and requires).
+                self.base.imports.push(
+                    format!(
+                        "const {identifier} = () => require(/*turbopackChunkingType: \
+                         shared*/\"{inner_module_id}\");"
+                    )
+                    .into(),
+                );
 
                 let source = dynamic_image_metadata_source(
                     *ResolvedVc::upcast(self.base.module_asset_context),
@@ -201,7 +210,10 @@ impl AppPageLoaderTreeBuilder {
                     .insert(inner_module_id.into(), module);
 
                 let s = "      ";
-                writeln!(self.loader_tree_code, "{s}{identifier},")?;
+                writeln!(
+                    self.loader_tree_code,
+                    "{s}async (props) => interopDefault(await {identifier}())(props),"
+                )?;
             }
         }
         Ok(())
@@ -219,70 +231,41 @@ impl AppPageLoaderTreeBuilder {
 
         let identifier = magic_identifier::mangle(&format!("{name} #{i}"));
         let inner_module_id = format!("METADATA_{i}");
-        let helper_import: RcStr = "import { fillMetadataSegment } from \
-                                    'next/dist/lib/metadata/get-metadata-route' with { \
-                                    'turbopack-transition': 'next-server-utility' }"
-            .into();
 
-        if !self.base.imports.contains(&helper_import) {
-            self.base.imports.push(helper_import);
-        }
-
-        self.base
-            .imports
-            .push(format!("import {identifier} from \"{inner_module_id}\";").into());
-        let module = Vc::upcast(StructuredImageModuleType::create_module(
+        // This should use the same importing mechanism as create_module_tuple_code, so that the
+        // relative order of items is retained (which isn't the case when mixing ESM imports and
+        // requires).
+        self.base.imports.push(
+            format!(
+                "const {identifier} = () => require(/*turbopackChunkingType: \
+                 shared*/\"{inner_module_id}\");"
+            )
+            .into(),
+        );
+        let module = StructuredImageModuleType::create_module(
             Vc::upcast(FileSource::new(path.clone())),
             BlurPlaceholderMode::None,
             *self.base.module_asset_context,
-        ));
+        );
         let module = self.base.process_module(module).to_resolved().await?;
         self.base
             .inner_assets
             .insert(inner_module_id.into(), module);
 
-        let s = "      ";
-        writeln!(self.loader_tree_code, "{s}(async (props) => [{{")?;
-        let pathname_prefix = if let Some(base_path) = &self.base_path {
-            format!("{base_path}/{app_page}")
-        } else {
-            app_page.to_string()
-        };
-        let metadata_route = &*get_metadata_route_name(item.clone().into()).await?;
-        writeln!(
-            self.loader_tree_code,
-            "{s}  url: fillMetadataSegment({}, await props.params, {}) + \
-             `?${{{identifier}.src.split(\"/\").splice(-1)[0]}}`,",
-            StringifyJs(&pathname_prefix),
-            StringifyJs(metadata_route),
-        )?;
-
-        let numeric_sizes = name == "twitter" || name == "openGraph";
-        if numeric_sizes {
-            writeln!(self.loader_tree_code, "{s}  width: {identifier}.width,")?;
-            writeln!(self.loader_tree_code, "{s}  height: {identifier}.height,")?;
-        } else {
-            // For SVGs, skip sizes and use "any" to let it scale automatically based on viewport,
-            // For the images doesn't provide the size properly, use "any" as well.
-            // If the size is presented, use the actual size for the image.
-            let sizes = if path.has_extension(".svg") {
-                "any".to_string()
-            } else {
-                format!("${{{identifier}.width}}x${{{identifier}.height}}")
-            };
-            writeln!(self.loader_tree_code, "{s}  sizes: `{sizes}`,")?;
-        }
-
-        let content_type = get_content_type(path).await?;
-        writeln!(self.loader_tree_code, "{s}  type: `{content_type}`,")?;
-
-        if let Some(alt_path) = alt_path {
+        let alt = if let Some(alt_path) = alt_path {
             let identifier = magic_identifier::mangle(&format!("{name} alt text #{i}"));
             let inner_module_id = format!("METADATA_ALT_{i}");
 
-            self.base
-                .imports
-                .push(format!("import {identifier} from \"{inner_module_id}\";").into());
+            // This should use the same importing mechanism as create_module_tuple_code, so that the
+            // relative order of items is retained (which isn't the case when mixing ESM imports and
+            // requires).
+            self.base.imports.push(
+                format!(
+                    "const {identifier} = () => require(/*turbopackChunkingType: \
+                     shared*/\"{inner_module_id}\");"
+                )
+                .into(),
+            );
 
             let module = self
                 .base
@@ -296,10 +279,65 @@ impl AppPageLoaderTreeBuilder {
                 .inner_assets
                 .insert(inner_module_id.into(), module);
 
-            writeln!(self.loader_tree_code, "{s}  alt: {identifier},")?;
+            Some(identifier)
+        } else {
+            None
+        };
+
+        let s = "      ";
+        writeln!(self.loader_tree_code, "{s}(async () => {{")?;
+        writeln!(
+            self.loader_tree_code,
+            "{s}  const mod = interopDefault(await {identifier}());"
+        )?;
+        if let Some(alt) = &alt {
+            writeln!(
+                self.loader_tree_code,
+                "{s}  const alt = interopDefault(await {alt}());"
+            )?;
+        }
+        writeln!(self.loader_tree_code, "{s}  return [{{")?;
+        let pathname_prefix = match &self.base_path {
+            Some(base_path) if !base_path.is_empty() => {
+                format!("{base_path}{app_page}")
+            }
+            _ => app_page.to_string(),
+        };
+        let metadata_route = fill_static_metadata_segment(
+            &pathname_prefix,
+            &get_metadata_route_name(item.clone().into()).await?,
+        );
+        writeln!(
+            self.loader_tree_code,
+            "{s}    url: {} + `?${{mod.src.split(\"/\").splice(-1)[0]}}`,",
+            StringifyJs(&metadata_route),
+        )?;
+
+        let numeric_sizes = name == "twitter" || name == "openGraph";
+        if numeric_sizes {
+            writeln!(self.loader_tree_code, "{s}    width: mod.width,")?;
+            writeln!(self.loader_tree_code, "{s}    height: mod.height,")?;
+        } else {
+            // For SVGs, skip sizes and use "any" to let it scale automatically based on viewport,
+            // For the images doesn't provide the size properly, use "any" as well.
+            // If the size is presented, use the actual size for the image.
+            let sizes = if path.has_extension(".svg") {
+                "any"
+            } else {
+                "${mod.width}x${mod.height}"
+            };
+            writeln!(self.loader_tree_code, "{s}    sizes: `{sizes}`,")?;
         }
 
-        writeln!(self.loader_tree_code, "{s}}}]),")?;
+        let content_type = get_content_type(path).await?;
+        writeln!(self.loader_tree_code, "{s}    type: `{content_type}`,")?;
+
+        if alt.is_some() {
+            writeln!(self.loader_tree_code, "{s}    alt,")?;
+        }
+
+        writeln!(self.loader_tree_code, "{s}  }}];")?;
+        writeln!(self.loader_tree_code, "{s}}}),")?;
 
         Ok(())
     }
@@ -313,6 +351,7 @@ impl AppPageLoaderTreeBuilder {
             parallel_routes,
             modules,
             global_metadata,
+            static_siblings,
         } = loader_tree;
 
         writeln!(
@@ -384,7 +423,15 @@ impl AppPageLoaderTreeBuilder {
 
         self.loader_tree_code += &modules_code;
 
-        write!(self.loader_tree_code, "}}]")?;
+        // Add static siblings for dynamic segments. An empty array means "known
+        // to have no siblings" which is distinct from not outputting the field
+        // (unknown). Turbopack always knows all siblings since it builds the full
+        // directory tree.
+        write!(
+            self.loader_tree_code,
+            "}}, {}]",
+            StringifyJs(static_siblings)
+        )?;
         Ok(())
     }
 
@@ -395,15 +442,6 @@ impl AppPageLoaderTreeBuilder {
         let loader_tree = &*loader_tree.await?;
 
         let modules = &loader_tree.modules;
-        // load global-error module
-        if let Some(global_error) = &modules.global_error {
-            let module = self
-                .base
-                .process_source(Vc::upcast(FileSource::new(global_error.clone())))
-                .to_resolved()
-                .await?;
-            self.base.inner_assets.insert(GLOBAL_ERROR.into(), module);
-        };
         // load global-not-found module
         if let Some(global_not_found) = &modules.global_not_found {
             let module = self
@@ -444,5 +482,4 @@ impl AppPageLoaderTreeModule {
     }
 }
 
-pub const GLOBAL_ERROR: &str = "GLOBAL_ERROR_MODULE";
 pub const GLOBAL_NOT_FOUND: &str = "GLOBAL_NOT_FOUND_MODULE";
