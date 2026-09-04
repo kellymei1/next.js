@@ -14,7 +14,7 @@ static REGISTRATION: Registration = register!();
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recompute() {
-    run_once(&REGISTRATION, || async {
+    run_once(&REGISTRATION, async || {
         unmark_top_level_task_may_leak_eventually_consistent_state();
         let input = *ChangingInput::new(1).to_resolved().await?;
         let input2 = *ChangingInput::new(2).to_resolved().await?;
@@ -80,7 +80,7 @@ impl ValueToString for Collectible {
     }
 }
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn inner_compute(
     input: ResolvedVc<ChangingInput>,
     input2: ResolvedVc<ChangingInput>,
@@ -103,7 +103,7 @@ async fn inner_compute2(input: Vc<ChangingInput>, innerness: u32) -> Result<Vc<u
     Ok(Vc::cell(42))
 }
 
-#[turbo_tasks::function]
+#[turbo_tasks::function(root)]
 async fn compute(
     input: ResolvedVc<ChangingInput>,
     input2: ResolvedVc<ChangingInput>,

@@ -45,14 +45,14 @@ struct ConsumeResult {
     random: u32,
 }
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 fn create_state_operation() -> Vc<Step> {
     Step(State::new(0)).cell()
 }
 
 /// Produces a HashedValue from a state. The noise field changes each execution
 /// but does not affect hash or equality.
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn produce_hashed(input: ResolvedVc<Step>) -> Result<Vc<HashedValue>> {
     let value = *input.await?.get();
     let noise = EXECUTION_COUNTER.fetch_add(1, Ordering::Relaxed) as u64;
@@ -60,7 +60,7 @@ async fn produce_hashed(input: ResolvedVc<Step>) -> Result<Vc<HashedValue>> {
 }
 
 /// Consumes the HashedValue and records a random number to detect re-execution.
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn consume_hashed(input: ResolvedVc<Step>) -> Result<Vc<ConsumeResult>> {
     let hashed = produce_hashed(input).connect();
     let v = hashed.await?;
@@ -72,7 +72,7 @@ async fn consume_hashed(input: ResolvedVc<Step>) -> Result<Vc<ConsumeResult>> {
 /// Test 1: When the value changes, the consumer SHOULD be invalidated and re-execute.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_hashed_cell_mode_change_triggers_invalidation() {
-    run(&REGISTRATION, || async {
+    run(&REGISTRATION, async || {
         let state_op = create_state_operation();
         let state_vc = state_op.resolve().strongly_consistent().await?;
         let state = state_op.read_strongly_consistent().await?;
@@ -103,7 +103,7 @@ async fn test_hashed_cell_mode_change_triggers_invalidation() {
 /// With `serialization = "hash"`, the consumer should not be re-executed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_hashed_cell_mode_equal_value_no_invalidation() {
-    run(&REGISTRATION, || async {
+    run(&REGISTRATION, async || {
         let state_op = create_state_operation();
         let state_vc = state_op.resolve().strongly_consistent().await?;
         let state = state_op.read_strongly_consistent().await?;

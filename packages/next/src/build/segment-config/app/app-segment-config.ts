@@ -21,8 +21,9 @@ const RuntimeSampleSchema = z
 
 const InstantConfigObjectSchema = z
   .object({
-    samples: z.array(RuntimeSampleSchema).min(1).optional(),
-    from: z.array(z.string()).optional(),
+    level: z.enum(['warning', 'experimental-error']).optional(),
+    unstable_samples: z.array(RuntimeSampleSchema).min(1).optional(),
+    unstable_from: z.array(z.string()).optional(),
     unstable_disableValidation: z.literal(true).optional(),
     unstable_disableDevValidation: z.literal(true).optional(),
     unstable_disableBuildValidation: z.literal(true).optional(),
@@ -35,20 +36,11 @@ const InstantConfigSchema = z.union([
   z.literal(false),
 ])
 
-const PrefetchSchema = z.enum([
-  'auto',
-  'force-disabled',
-  'force-static',
-  'force-runtime',
-])
+const PrefetchSchema = z.enum(['auto', 'partial', 'force-disabled'])
 
 export type Instant = InstantConfig | true | false
 
-export type Prefetch =
-  | 'auto'
-  | 'force-disabled'
-  | 'force-static'
-  | 'force-runtime'
+export type Prefetch = 'auto' | 'partial' | 'force-disabled'
 
 export type InstantConfigForTypeCheckInternal = __GenericInstantConfig | Instant
 // the __GenericInstantConfig type is used to avoid type widening issues with
@@ -58,8 +50,9 @@ export type InstantConfigForTypeCheckInternal = __GenericInstantConfig | Instant
 // and thus cannot match the discriminated union type. If we figure out a better way we should
 // delete the __GenericInstantConfig member.
 interface __GenericInstantConfig {
-  samples?: Array<WideInstantSample>
-  from?: string[]
+  level?: string
+  unstable_samples?: Array<WideInstantSample>
+  unstable_from?: string[]
   unstable_disableValidation?: boolean
   unstable_disableDevValidation?: boolean
   unstable_disableBuildValidation?: boolean
@@ -73,8 +66,9 @@ type WideInstantSample = {
 }
 
 export interface InstantConfig {
-  samples?: Array<InstantSample>
-  from?: string[]
+  level?: 'warning' | 'experimental-error'
+  unstable_samples?: Array<InstantSample>
+  unstable_from?: string[]
   unstable_disableValidation?: true
   unstable_disableDevValidation?: true
   unstable_disableBuildValidation?: true
@@ -131,14 +125,17 @@ const AppSegmentConfigSchema = z.object({
   /**
    * How this segment should be prefetched.
    */
-  unstable_instant: InstantConfigSchema.optional(),
+  instant: InstantConfigSchema.optional(),
 
   /**
-   * Controls runtime prefetching for this segment.
-   * 'static' is a noop (default behavior).
-   * 'runtime' enables runtime prefetching.
+   * Controls prefetching for this segment.
+   * - 'auto' (default) is a noop.
+   * - 'partial' enables Partial Prefetching. Only Cache Components are
+   *   prefetched, not dynamic ones. When a static prefetch is insufficient,
+   *   the segment may be prefetched with a runtime request instead.
+   * - 'force-disabled' disables prefetching for the segment.
    */
-  unstable_prefetch: PrefetchSchema.optional(),
+  prefetch: PrefetchSchema.optional(),
 
   /**
    * The stale time for dynamic responses in seconds.
@@ -184,15 +181,15 @@ export function parseAppSegmentConfig(
               )} on "${route}", must be a non-negative number or false`,
             }
           }
-          case 'unstable_instant': {
+          case 'instant': {
             return {
               // @TODO replace this link with a link to the docs when they are written
-              message: `Invalid unstable_instant value ${JSON.stringify(ctx.data)} on "${route}", must be \`true\`, \`false\`, or an object. Read more at https://nextjs.org/docs/messages/invalid-instant-configuration`,
+              message: `Invalid instant value ${JSON.stringify(ctx.data)} on "${route}", must be \`true\`, \`false\`, or an object. Read more at https://nextjs.org/docs/messages/invalid-instant-configuration`,
             }
           }
-          case 'unstable_prefetch': {
+          case 'prefetch': {
             return {
-              message: `Invalid unstable_prefetch value ${JSON.stringify(ctx.data)} on "${route}", must be "auto", "force-disabled", "force-static", or "force-runtime".`,
+              message: `Invalid prefetch value ${JSON.stringify(ctx.data)} on "${route}", must be "auto", "partial", or "force-disabled".`,
             }
           }
           case 'unstable_dynamicStaleTime': {
@@ -252,14 +249,17 @@ export type AppSegmentConfig = {
   /**
    * How this segment should be prefetched.
    */
-  unstable_instant?: Instant
+  instant?: Instant
 
   /**
-   * Controls runtime prefetching for this segment.
-   * 'static' is a noop (default behavior).
-   * 'runtime' enables runtime prefetching.
+   * Controls prefetching for this segment.
+   * - 'auto' (default) is a noop.
+   * - 'partial' enables Partial Prefetching. Only Cache Components are
+   *   prefetched, not dynamic ones. When a static prefetch is insufficient,
+   *   the segment may be prefetched with a runtime request instead.
+   * - 'force-disabled' disables prefetching for the segment.
    */
-  unstable_prefetch?: Prefetch
+  prefetch?: Prefetch
 
   /**
    * The stale time for dynamic responses in seconds.

@@ -62,3 +62,135 @@ it('should support multiple patterns across directories', () => {
   expect(keys).toEqual(['./dir/bar.js', './dir/foo.js', './other/baz.js'])
   expect(multiModules['./other/baz.js'].default).toBe('baz')
 })
+
+// The result keys stay logical while module resolution follows the directory symlink.
+const symlinkModules = import.meta.glob('./linked/*.js', { eager: true })
+
+it('should resolve modules through a symlink while preserving logical keys', () => {
+  const keys = Object.keys(symlinkModules).sort()
+  expect(keys).toEqual(['./linked/bar.js', './linked/foo.js'])
+  expect(symlinkModules['./linked/foo.js'].default).toBe('foo')
+  expect(symlinkModules['./linked/bar.js'].default).toBe('bar')
+})
+
+// import: '*' (namespace import) — should return the whole module namespace
+// Uses ./other/*.js to avoid colliding with the eager test above (same pattern + eager + no import)
+const namespaceModules = import.meta.glob('./other/*.js', {
+  import: '*',
+  eager: true,
+})
+
+it('should return the whole module namespace with import: "*"', () => {
+  const keys = Object.keys(namespaceModules).sort()
+  expect(keys).toEqual(['./other/baz.js'])
+  // Each value is the full module namespace object
+  expect(namespaceModules['./other/baz.js'].default).toBe('baz')
+  expect(namespaceModules['./other/baz.js'].value).toBe(7)
+})
+
+// Negative pattern combined with query
+const queryWithNeg = import.meta.glob(['./dir/*.js', '!**/bar.js'], {
+  query: '?raw',
+  import: '*',
+})
+
+it('should support query option with negative patterns', () => {
+  const keys = Object.keys(queryWithNeg)
+  expect(keys).toEqual(['./dir/foo.js'])
+  // Values are thunks (lazy mode)
+  expect(typeof queryWithNeg['./dir/foo.js']).toBe('function')
+})
+
+// query as object literal — serialized to query string
+const queryObjModules = import.meta.glob('./dir/*.js', {
+  query: { bar: 'foo', raw: true },
+})
+
+it('should support query as object literal', () => {
+  const keys = Object.keys(queryObjModules).sort()
+  expect(keys).toEqual(['./dir/bar.js', './dir/foo.js'])
+  // Values are thunks (lazy)
+  expect(typeof queryObjModules['./dir/foo.js']).toBe('function')
+})
+
+// Dotfile directories are matched by wildcards (not excluded)
+const dotfileGlob = import.meta.glob(['./**/*.js', '!./index.js'], {
+  eager: true,
+})
+
+it('should include dotfile directories with wildcard patterns', () => {
+  const keys = Object.keys(dotfileGlob).sort()
+  expect(keys).toEqual([
+    './.foo/hidden.js',
+    './CaseDir/ModuleUpper.js',
+    './CaseDir/module-lower.js',
+    './dir/bar.js',
+    './dir/foo.js',
+    './linked/bar.js',
+    './linked/foo.js',
+    './other/baz.js',
+  ])
+})
+
+// Dotfile directories targeted explicitly should be included
+const dotfileExplicit = import.meta.glob('./.foo/*.js', { eager: true })
+
+it('should include dotfile directories when explicitly targeted', () => {
+  const keys = Object.keys(dotfileExplicit)
+  expect(keys).toEqual(['./.foo/hidden.js'])
+})
+
+const caseSensitiveDefault = import.meta.glob('./CaseDir/module*.js', {
+  eager: true,
+})
+const caseSensitiveExplicit = import.meta.glob('./CaseDir/Module*.js', {
+  eager: true,
+  caseSensitive: true,
+})
+const caseInsensitive = import.meta.glob('./CaseDir/module*.js', {
+  eager: true,
+  caseSensitive: false,
+})
+const caseInsensitiveDirectory = import.meta.glob('./casedir/module*.js', {
+  eager: true,
+  caseSensitive: false,
+})
+const caseInsensitiveNegative = import.meta.glob(
+  ['./casedir/*.js', '!./casedir/moduleupper.js'],
+  {
+    eager: true,
+    caseSensitive: false,
+  }
+)
+
+it('should match case-sensitively by default and when explicitly enabled', () => {
+  expect(Object.keys(caseSensitiveDefault)).toEqual([
+    './CaseDir/module-lower.js',
+  ])
+  expect(Object.keys(caseSensitiveExplicit)).toEqual([
+    './CaseDir/ModuleUpper.js',
+  ])
+})
+
+it('should match file names case-insensitively when disabled', () => {
+  const keys = Object.keys(caseInsensitive).sort()
+  expect(keys).toEqual([
+    './CaseDir/ModuleUpper.js',
+    './CaseDir/module-lower.js',
+  ])
+  expect(caseInsensitive['./CaseDir/ModuleUpper.js'].default).toBe('upper')
+})
+
+it('should traverse directories case-insensitively when disabled', () => {
+  const keys = Object.keys(caseInsensitiveDirectory).sort()
+  expect(keys).toEqual([
+    './CaseDir/ModuleUpper.js',
+    './CaseDir/module-lower.js',
+  ])
+})
+
+it('should apply case-insensitive matching to negative patterns', () => {
+  expect(Object.keys(caseInsensitiveNegative)).toEqual([
+    './CaseDir/module-lower.js',
+  ])
+})

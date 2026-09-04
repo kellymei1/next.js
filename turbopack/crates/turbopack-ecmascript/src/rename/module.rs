@@ -18,7 +18,7 @@ use turbopack_core::{
 
 use crate::{
     AnalyzeEcmascriptModuleResult, EcmascriptAnalyzable, EcmascriptAnalyzableExt,
-    EcmascriptModuleContent, EcmascriptModuleContentOptions, EcmascriptOptions,
+    EcmascriptModuleContent, EcmascriptModuleContentOptions, EcmascriptOptions, EnvVarInfo,
     MergedEcmascriptModule, SpecifiedModuleType,
     chunk::{
         EcmascriptChunkItemContent, EcmascriptChunkPlaceable, EcmascriptExports,
@@ -117,8 +117,14 @@ impl Module for EcmascriptModuleRenameModule {
     }
 
     #[turbo_tasks::function]
-    fn ident(&self) -> Vc<AssetIdent> {
-        self.module.ident().with_part(self.part.clone())
+    async fn ident(&self) -> Result<Vc<AssetIdent>> {
+        Ok(self
+            .module
+            .ident()
+            .owned()
+            .await?
+            .with_part(self.part.clone())
+            .into_vc())
     }
 
     #[turbo_tasks::function]
@@ -162,6 +168,11 @@ impl EcmascriptAnalyzable for EcmascriptModuleRenameModule {
     #[turbo_tasks::function]
     fn analyze(&self) -> Result<Vc<AnalyzeEcmascriptModuleResult>> {
         bail!("EcmascriptModuleRenameModule::analyze shouldn't be called");
+    }
+
+    #[turbo_tasks::function]
+    fn env_var_info(self: Vc<Self>) -> Vc<EnvVarInfo> {
+        EnvVarInfo::empty()
     }
 
     #[turbo_tasks::function]
@@ -230,6 +241,12 @@ impl EcmascriptChunkPlaceable for EcmascriptModuleRenameModule {
         let exports = EsmExports {
             exports: FrozenMap::from_unique_sorted_box(Box::new([export])),
             star_exports: Vec::new(),
+            // This module only re-exports one binding of `self.module` under a different name, so
+            // whether its own key may be shortened follows the module it renames.
+            mangle_export_names: match &*self.module.get_exports().await? {
+                EcmascriptExports::EsmExports(exports) => exports.await?.mangle_export_names,
+                _ => false,
+            },
         }
         .resolved_cell();
         Ok(EcmascriptExports::EsmExports(exports).cell())

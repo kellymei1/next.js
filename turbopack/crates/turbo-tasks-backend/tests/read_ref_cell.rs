@@ -15,7 +15,7 @@ static REGISTRATION: Registration = register!();
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_read_ref() {
-    run_once(&REGISTRATION, || async {
+    run_once(&REGISTRATION, async || {
         unmark_top_level_task_may_leak_eventually_consistent_state();
         let counter = Counter::cell(Counter {
             value: Mutex::new((0, Default::default())),
@@ -77,7 +77,7 @@ impl Counter {
 
 #[turbo_tasks::value_impl]
 impl Counter {
-    #[turbo_tasks::function]
+    #[turbo_tasks::function(root)]
     fn get_value(&self) -> Result<Vc<CounterValue>> {
         let mut lock = self.value.lock().unwrap();
         lock.1.insert(get_invalidator().unwrap());
@@ -87,7 +87,7 @@ impl Counter {
 
 #[turbo_tasks::value_impl]
 impl CounterValue {
-    #[turbo_tasks::function]
+    #[turbo_tasks::function(root)]
     fn get_value(self: Vc<Self>) -> Vc<Self> {
         self
     }

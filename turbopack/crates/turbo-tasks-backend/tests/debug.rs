@@ -1,3 +1,5 @@
+// `ValueDebug` only carries `dbg()` under `debug_assertions`
+#![cfg(debug_assertions)]
 #![feature(arbitrary_self_types)]
 #![feature(arbitrary_self_types_pointers)]
 #![allow(clippy::needless_return)] // tokio macro-generated code doesn't respect this
@@ -10,7 +12,7 @@ use turbo_tasks_testing::{Registration, register, run_once};
 
 static REGISTRATION: Registration = register!();
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn dbg_operation(value: ResolvedVc<Box<dyn ValueDebug>>) -> anyhow::Result<Vc<RcStr>> {
     let trait_ref = value.into_trait_ref().await?;
     let s = trait_ref.dbg().await?;
@@ -155,7 +157,7 @@ async fn test_struct_transparent_debug() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_struct_option_debug() {
-    run_once(&REGISTRATION, || async {
+    run_once(&REGISTRATION, async || {
         let a = StructWithOption { option: None }.resolved_cell();
         assert_eq!(
             format!(
@@ -189,7 +191,7 @@ async fn test_struct_option_debug() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_struct_vec_debug() {
-    run_once(&REGISTRATION, || async {
+    run_once(&REGISTRATION, async || {
         let a = StructWithVec { vec: Vec::new() }.resolved_cell();
         assert_eq!(
             format!(
@@ -223,7 +225,7 @@ async fn test_struct_vec_debug() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_struct_ignore_debug() {
-    run_once(&REGISTRATION, || async {
+    run_once(&REGISTRATION, async || {
         let a = StructWithIgnore {
             dont_ignore: 42,
             ignore: Mutex::new(()),

@@ -17,7 +17,7 @@ if (process.env.NEXT_RUNTIME === '') {
       }
     },
     unstable_noStore: function unstable_noStore() {},
-    unstable_io: require('next/dist/client/request/io.browser').unstable_io,
+    io: require('next/dist/client/request/io.browser').io,
 
     updateTag: notAvailableInClient('updateTag'),
     revalidateTag: notAvailableInClient('revalidateTag'),
@@ -25,6 +25,8 @@ if (process.env.NEXT_RUNTIME === '') {
     refresh: notAvailableInClient('refresh'),
     cacheLife: notAvailableInClient('cacheLife'),
     cacheTag: notAvailableInClient('cacheTag'),
+    unstable_navigation: notAvailableInClient('unstable_navigation'),
+    unstable_prefetch: notAvailableInClient('unstable_prefetch'),
   }
 } else {
   // Keep server requires in this branch so browser builds can DCE them.
@@ -46,9 +48,13 @@ if (process.env.NEXT_RUNTIME === '') {
     unstable_noStore:
       require('next/dist/server/web/spec-extension/unstable-no-store')
         .unstable_noStore,
-    unstable_io: require('next/dist/server/request/io').unstable_io,
+    io: require('next/dist/server/request/io').io,
     cacheLife: require('next/dist/server/use-cache/cache-life').cacheLife,
     cacheTag: require('next/dist/server/use-cache/cache-tag').cacheTag,
+    unstable_navigation: require('next/dist/server/request/cache-stages')
+      .unstable_navigation,
+    unstable_prefetch: require('next/dist/server/request/cache-stages')
+      .unstable_prefetch,
   }
 }
 
@@ -94,4 +100,6 @@ exports.unstable_cacheLife = cacheExports.unstable_cacheLife
 exports.cacheTag = cacheExports.cacheTag
 exports.unstable_cacheTag = cacheExports.unstable_cacheTag
 exports.refresh = cacheExports.refresh
-exports.unstable_io = cacheExports.unstable_io
+exports.io = cacheExports.io
+exports.unstable_navigation = cacheExports.unstable_navigation
+exports.unstable_prefetch = cacheExports.unstable_prefetch

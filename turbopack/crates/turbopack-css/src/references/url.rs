@@ -58,7 +58,7 @@ impl UrlAssetReference {
         self: Vc<Self>,
         chunking_context: Vc<Box<dyn ChunkingContext>>,
     ) -> Result<Vc<ReferencedAsset>> {
-        if let Some(module) = *self.resolve_reference().first_module().await?
+        if let Some(module) = self.resolve_reference().await?.first_module().await?
             && let Some(embeddable) = ResolvedVc::try_downcast::<Box<dyn CssEmbed>>(module)
         {
             return Ok(ReferencedAsset::Some(
@@ -91,6 +91,10 @@ impl ModuleReference for UrlAssetReference {
             inherit_async: false,
             hoisted: false,
         })
+    }
+
+    fn source(&self) -> Option<IssueSource> {
+        Some(self.issue_source)
     }
 }
 
@@ -128,7 +132,7 @@ pub async fn resolve_url_reference(
     Ok(Vc::cell(None))
 }
 
-pub fn replace_url_references<'i, 'o>(ss: &mut StyleSheet<'i, 'o>, urls: &FxHashMap<RcStr, RcStr>) {
+pub fn replace_url_references<'i>(ss: &mut StyleSheet<'i>, urls: &FxHashMap<RcStr, RcStr>) {
     let mut replacer = AssetReferenceReplacer { urls };
     ss.visit(&mut replacer).unwrap();
 }

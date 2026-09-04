@@ -50,11 +50,12 @@ impl AppPageLoaderTreeBuilder {
         &mut self,
         module_type: AppDirModuleType,
         path: Option<FileSystemPath>,
+        depth: u32,
     ) -> Result<()> {
         if let Some(path) = path {
             let tuple_code = self
                 .base
-                .create_module_tuple_code(module_type, path)
+                .create_module_tuple_code(module_type, path, depth)
                 .await?;
 
             writeln!(
@@ -71,6 +72,7 @@ impl AppPageLoaderTreeBuilder {
         app_page: &AppPage,
         metadata: &Metadata,
         global_metadata: Option<&GlobalMetadata>,
+        depth: u32,
     ) -> Result<()> {
         if metadata.is_empty()
             && global_metadata
@@ -107,13 +109,13 @@ impl AppPageLoaderTreeBuilder {
             icon.clone()
         };
 
-        self.write_metadata_items(app_page, "icon", icon.iter())
+        self.write_metadata_items(app_page, "icon", icon.iter(), depth)
             .await?;
-        self.write_metadata_items(app_page, "apple", apple.iter())
+        self.write_metadata_items(app_page, "apple", apple.iter(), depth)
             .await?;
-        self.write_metadata_items(app_page, "twitter", twitter.iter())
+        self.write_metadata_items(app_page, "twitter", twitter.iter(), depth)
             .await?;
-        self.write_metadata_items(app_page, "openGraph", open_graph.iter())
+        self.write_metadata_items(app_page, "openGraph", open_graph.iter(), depth)
             .await?;
 
         if let Some(global_metadata) = global_metadata {
@@ -151,6 +153,7 @@ impl AppPageLoaderTreeBuilder {
         app_page: &AppPage,
         name: &str,
         it: impl Iterator<Item = &'a MetadataWithAltItem>,
+        depth: u32,
     ) -> Result<()> {
         let mut it = it.peekable();
         if it.peek().is_none() {
@@ -158,7 +161,8 @@ impl AppPageLoaderTreeBuilder {
         }
         writeln!(self.loader_tree_code, "    {name}: [")?;
         for item in it {
-            self.write_metadata_item(app_page, name, item).await?;
+            self.write_metadata_item(app_page, name, item, depth)
+                .await?;
         }
         writeln!(self.loader_tree_code, "    ],")?;
         Ok(())
@@ -169,6 +173,7 @@ impl AppPageLoaderTreeBuilder {
         app_page: &AppPage,
         name: &str,
         item: &MetadataWithAltItem,
+        depth: u32,
     ) -> Result<()> {
         match item {
             MetadataWithAltItem::Static { path, alt_path } => {
@@ -178,6 +183,7 @@ impl AppPageLoaderTreeBuilder {
                     item,
                     path.clone(),
                     alt_path.clone(),
+                    depth,
                 )
                 .await?;
             }
@@ -186,16 +192,8 @@ impl AppPageLoaderTreeBuilder {
                 let identifier = magic_identifier::mangle(&format!("{name} #{i}"));
                 let inner_module_id = format!("METADATA_{i}");
 
-                // This should use the same importing mechanism as create_module_tuple_code, so that
-                // the relative order of items is retained (which isn't the case
-                // when mixing ESM imports and requires).
-                self.base.imports.push(
-                    format!(
-                        "const {identifier} = () => require(/*turbopackChunkingType: \
-                         shared*/\"{inner_module_id}\");"
-                    )
-                    .into(),
-                );
+                self.base
+                    .create_module_getter_declaration(depth, &identifier, &inner_module_id);
 
                 let source = dynamic_image_metadata_source(
                     *ResolvedVc::upcast(self.base.module_asset_context),
@@ -226,22 +224,15 @@ impl AppPageLoaderTreeBuilder {
         item: &MetadataWithAltItem,
         path: FileSystemPath,
         alt_path: Option<FileSystemPath>,
+        depth: u32,
     ) -> Result<()> {
         let i = self.base.unique_number();
 
         let identifier = magic_identifier::mangle(&format!("{name} #{i}"));
         let inner_module_id = format!("METADATA_{i}");
 
-        // This should use the same importing mechanism as create_module_tuple_code, so that the
-        // relative order of items is retained (which isn't the case when mixing ESM imports and
-        // requires).
-        self.base.imports.push(
-            format!(
-                "const {identifier} = () => require(/*turbopackChunkingType: \
-                 shared*/\"{inner_module_id}\");"
-            )
-            .into(),
-        );
+        self.base
+            .create_module_getter_declaration(depth, &identifier, &inner_module_id);
         let module = StructuredImageModuleType::create_module(
             Vc::upcast(FileSource::new(path.clone())),
             BlurPlaceholderMode::None,
@@ -256,16 +247,8 @@ impl AppPageLoaderTreeBuilder {
             let identifier = magic_identifier::mangle(&format!("{name} alt text #{i}"));
             let inner_module_id = format!("METADATA_ALT_{i}");
 
-            // This should use the same importing mechanism as create_module_tuple_code, so that the
-            // relative order of items is retained (which isn't the case when mixing ESM imports and
-            // requires).
-            self.base.imports.push(
-                format!(
-                    "const {identifier} = () => require(/*turbopackChunkingType: \
-                     shared*/\"{inner_module_id}\");"
-                )
-                .into(),
-            );
+            self.base
+                .create_module_getter_declaration(depth, &identifier, &inner_module_id);
 
             let module = self
                 .base
@@ -342,7 +325,12 @@ impl AppPageLoaderTreeBuilder {
         Ok(())
     }
 
-    async fn walk_tree(&mut self, loader_tree: &AppPageLoaderTree, root: bool) -> Result<()> {
+    async fn walk_tree(
+        &mut self,
+        loader_tree: &AppPageLoaderTree,
+        root: bool,
+        depth: u32,
+    ) -> Result<()> {
         use std::fmt::Write;
 
         let AppPageLoaderTree {
@@ -385,38 +373,56 @@ impl AppPageLoaderTreeBuilder {
             app_page,
             metadata,
             if root { Some(global_metadata) } else { None },
+            depth,
         )
         .await?;
 
-        self.write_modules_entry(AppDirModuleType::Layout, layout.clone())
+        self.write_modules_entry(AppDirModuleType::Layout, layout.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::Error, error.clone())
+        self.write_modules_entry(AppDirModuleType::Error, error.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::Loading, loading.clone())
+        self.write_modules_entry(AppDirModuleType::Loading, loading.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::Template, template.clone())
+        self.write_modules_entry(AppDirModuleType::Template, template.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::NotFound, not_found.clone())
+        self.write_modules_entry(AppDirModuleType::NotFound, not_found.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::Forbidden, forbidden.clone())
+        self.write_modules_entry(AppDirModuleType::Forbidden, forbidden.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::Unauthorized, unauthorized.clone())
+        self.write_modules_entry(AppDirModuleType::Unauthorized, unauthorized.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::Page, page.clone())
+        self.write_modules_entry(AppDirModuleType::Page, page.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::DefaultPage, default.clone())
+        self.write_modules_entry(AppDirModuleType::DefaultPage, default.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::GlobalError, global_error.clone())
+        self.write_modules_entry(AppDirModuleType::GlobalError, global_error.clone(), depth)
             .await?;
-        self.write_modules_entry(AppDirModuleType::GlobalNotFound, global_not_found.clone())
-            .await?;
+        self.write_modules_entry(
+            AppDirModuleType::GlobalNotFound,
+            global_not_found.clone(),
+            depth,
+        )
+        .await?;
 
         let modules_code = replace(&mut self.loader_tree_code, temp_loader_tree_code);
 
-        // add parallel_routes
-        for (key, parallel_route) in parallel_routes.iter() {
+        // Keep the serialized order stable for compatibility with existing
+        // clients, but don't make the loader tree representation itself depend
+        // on insertion order. Consumers that need the primary route should
+        // select `children` by key.
+        let ordered_parallel_routes = parallel_routes.get_key_value("children").into_iter().chain(
+            parallel_routes
+                .iter()
+                .filter(|(key, _)| key.as_str() != "children"),
+        );
+        for (key, parallel_route) in ordered_parallel_routes {
             write!(self.loader_tree_code, "{key}: ", key = StringifyJs(key))?;
-            Box::pin(self.walk_tree(parallel_route, false)).await?;
+            let next_depth = if key.as_str() == "children" {
+                depth + 1
+            } else {
+                depth
+            };
+            Box::pin(self.walk_tree(parallel_route, false, next_depth)).await?;
             writeln!(self.loader_tree_code, ",")?;
         }
         writeln!(self.loader_tree_code, "}}, {{")?;
@@ -454,9 +460,17 @@ impl AppPageLoaderTreeBuilder {
                 .insert(GLOBAL_NOT_FOUND.into(), module);
         };
 
-        self.walk_tree(loader_tree, true).await?;
+        self.walk_tree(loader_tree, true, 0).await?;
+        let mut imports = self.base.imports;
+        imports.sort_by_key(|(position, _)| *position);
         Ok(AppPageLoaderTreeModule {
-            imports: self.base.imports,
+            imports: std::iter::once(
+                "import { instrumentModuleGetter } from \
+                 \"next/dist/server/app-render/module-loading/instrument-module-getter\";"
+                    .into(),
+            )
+            .chain(imports.into_iter().map(|(_, import)| import))
+            .collect(),
             loader_tree_code: self.loader_tree_code.into(),
             inner_assets: self.base.inner_assets,
         })

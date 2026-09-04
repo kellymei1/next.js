@@ -5,7 +5,7 @@ use lightningcss::css_modules::CssModuleReference;
 use swc_core::common::{BytePos, FileName, LineCol, SourceMap};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{FxIndexMap, ResolvedVc, Vc, turbofmt};
-use turbo_tasks_fs::{FileSystemPath, rope::Rope};
+use turbo_tasks_fs::FileSystemPath;
 use turbopack_core::{
     chunk::{AsyncModuleInfo, ChunkableModule, ChunkingContext, ModuleChunkItemIdExt},
     context::{AssetContext, ProcessResult},
@@ -16,6 +16,7 @@ use turbopack_core::{
     reference_type::{CssReferenceSubType, ReferenceType},
     resolve::{origin::ResolveOrigin, parse::Request},
     source::{OptionSource, Source},
+    source_map::structured::StructuredSourceMap,
 };
 use turbopack_ecmascript::{
     chunk::{
@@ -41,19 +42,22 @@ use crate::{
 pub struct EcmascriptCssModule {
     pub source: ResolvedVc<Box<dyn Source>>,
     pub asset_context: ResolvedVc<Box<dyn AssetContext>>,
+    /// The path of `source`, precomputed so that `ResolveOrigin::origin_path` is synchronous.
+    origin_path: FileSystemPath,
 }
 
 #[turbo_tasks::value_impl]
 impl EcmascriptCssModule {
     #[turbo_tasks::function]
-    pub fn new(
+    pub async fn new(
         source: ResolvedVc<Box<dyn Source>>,
         asset_context: ResolvedVc<Box<dyn AssetContext>>,
-    ) -> Vc<Self> {
-        Self::cell(EcmascriptCssModule {
+    ) -> Result<Vc<Self>> {
+        Ok(Self::cell(EcmascriptCssModule {
+            origin_path: source.ident().await?.path.clone(),
             source,
             asset_context,
-        })
+        }))
     }
 }
 
@@ -64,8 +68,11 @@ impl Module for EcmascriptCssModule {
         Ok(self
             .source
             .ident()
+            .owned()
+            .await?
             .with_modifier(rcstr!("css module"))
-            .with_layer(self.asset_context.into_trait_ref().await?.layer()))
+            .with_layer(self.asset_context.into_trait_ref().await?.layer())
+            .into_vc())
     }
 
     #[turbo_tasks::function]
@@ -281,15 +288,16 @@ impl EcmascriptChunkPlaceable for EcmascriptCssModule {
                         original: original_name,
                         from,
                     } => {
-                        let resolved_module = from.resolve_reference().first_module().await?;
+                        let resolved_module =
+                            from.resolve_reference().await?.first_module().await?;
 
-                        let Some(resolved_module) = &*resolved_module else {
+                        let Some(resolved_module) = resolved_module else {
                             // Issue already emitted by CssModuleComposeReference::resolve_reference
                             continue;
                         };
 
                         let Some(css_module) =
-                            ResolvedVc::try_downcast_type::<EcmascriptCssModule>(*resolved_module)
+                            ResolvedVc::try_downcast_type::<EcmascriptCssModule>(resolved_module)
                         else {
                             // Issue already emitted by CssModuleComposeReference::resolve_reference
                             continue;
@@ -353,18 +361,16 @@ impl EcmascriptChunkPlaceable for EcmascriptCssModule {
 
 #[turbo_tasks::value_impl]
 impl ResolveOrigin for EcmascriptCssModule {
-    #[turbo_tasks::function]
-    fn origin_path(&self) -> Vc<FileSystemPath> {
-        self.source.ident().path()
+    fn origin_path(&self) -> FileSystemPath {
+        self.origin_path.clone()
     }
 
-    #[turbo_tasks::function]
-    fn asset_context(&self) -> Vc<Box<dyn AssetContext>> {
-        *self.asset_context
+    fn asset_context(&self) -> ResolvedVc<Box<dyn AssetContext>> {
+        self.asset_context
     }
 }
 
-fn generate_minimal_source_map(filename: String, source: String) -> Result<Rope> {
+fn generate_minimal_source_map(filename: String, source: String) -> Result<StructuredSourceMap> {
     let mut mappings = vec![];
     // Start from 1 because 0 is reserved for dummy spans in SWC.
     let mut pos = 1;

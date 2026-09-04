@@ -15,7 +15,7 @@ use turbopack_core::{
 
 use crate::{
     AnalyzeEcmascriptModuleResult, EcmascriptAnalyzable, EcmascriptAnalyzableExt,
-    EcmascriptModuleContent, EcmascriptModuleContentOptions, EcmascriptOptions,
+    EcmascriptModuleContent, EcmascriptModuleContentOptions, EcmascriptOptions, EnvVarInfo,
     MergedEcmascriptModule, SpecifiedModuleType,
     chunk::{
         EcmascriptChunkItemContent, EcmascriptChunkPlaceable, EcmascriptExports,
@@ -100,8 +100,14 @@ impl EcmascriptModuleFacadeModule {
 #[turbo_tasks::value_impl]
 impl Module for EcmascriptModuleFacadeModule {
     #[turbo_tasks::function]
-    fn ident(&self) -> Vc<AssetIdent> {
-        self.module.ident().with_part(ModulePart::Facade)
+    async fn ident(&self) -> Result<Vc<AssetIdent>> {
+        Ok(self
+            .module
+            .ident()
+            .owned()
+            .await?
+            .with_part(ModulePart::Facade)
+            .into_vc())
     }
 
     #[turbo_tasks::function]
@@ -144,6 +150,11 @@ impl EcmascriptAnalyzable for EcmascriptModuleFacadeModule {
     #[turbo_tasks::function]
     fn analyze(&self) -> Result<Vc<AnalyzeEcmascriptModuleResult>> {
         bail!("EcmascriptModuleFacadeModule::analyze shouldn't be called");
+    }
+
+    #[turbo_tasks::function]
+    fn env_var_info(self: Vc<Self>) -> Vc<EnvVarInfo> {
+        EnvVarInfo::empty()
     }
 
     #[turbo_tasks::function]
@@ -232,6 +243,7 @@ impl EcmascriptChunkPlaceable for EcmascriptModuleFacadeModule {
         let exports = EsmExports {
             exports: FrozenMap::from_unique_sorted_box(exports.into_boxed_slice()),
             star_exports: esm_exports.star_exports.clone(),
+            mangle_export_names: esm_exports.mangle_export_names,
         }
         .resolved_cell();
         Ok(EcmascriptExports::EsmExports(exports).cell())

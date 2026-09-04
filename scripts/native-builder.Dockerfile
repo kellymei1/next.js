@@ -10,10 +10,13 @@
 #   - Ubuntu 20.04 (glibc 2.31 — broad compatibility baseline)
 #   - Clang/LLD for all compilation and linking via --target
 #   - GNU cross-sysroots via crossbuild-essential (Ubuntu multiarch)
-#   - musl sysroots from musl.cc (headers + libs only; clang/lld do the work)
+#   - musl sysroots from GHCR-hosted rust-musl-cross images
 #   - Node.js 20 (glibc-linked, used as build tool for all targets)
 #   - Rust nightly toolchain (pinned to match rust-toolchain.toml)
 #   - @napi-rs/cli for building native Node.js addons
+
+FROM ghcr.io/rust-cross/rust-musl-cross:x86_64-musl@sha256:bcf6a66615f9d5bae659e38ab4311260e0488d1c34ad0ab9f9147f4cd5ef64ed AS musl_x86_64
+FROM ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:eab6a58ff66eaa33fa87fc31ed11403596719ca3f23aa51626fb993d77c1200b AS musl_aarch64
 
 FROM ubuntu:20.04 AS builder
 
@@ -42,31 +45,50 @@ RUN HOST_ARCH=$(dpkg --print-architecture) && \
       "deb [arch=${FOREIGN_ARCH}] ${FOREIGN_MIRROR} focal-security main universe" \
       > /etc/apt/sources.list
   
-# Core build tools + GNU cross-compilation sysroots + Node.js 20 via nodesource.
+# Core build tools + GNU cross-compilation sysroots.
 # crossbuild-essential installs headers + libs in the multiarch layout
 # that clang finds via --target. Both archs installed so the image
 # works on either host architecture.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends \
-    nodejs \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
     clang lld llvm pkg-config wget git xz-utils libssl-dev \
     crossbuild-essential-amd64 crossbuild-essential-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
-# Download musl cross-toolchains from musl.cc for their sysroots
-# (headers, crt files, libc, libgcc). Clang + rust-lld handle compilation
-# and linking; we only need the target libraries.
-# Also copy GCC's crt files and libgcc into the sysroot lib dir — clang 10
-# doesn't search the --gcc-toolchain path for these files.
-# https://musl.cc/
-RUN cd /opt && \
-    for TRIPLE in aarch64-linux-musl x86_64-linux-musl; do \
-      wget -qO- "https://musl.cc/${TRIPLE}-cross.tgz" | tar xz && \
-      cp /opt/${TRIPLE}-cross/lib/gcc/${TRIPLE}/*/crt*.o \
-         /opt/${TRIPLE}-cross/lib/gcc/${TRIPLE}/*/libgcc.a \
-         /opt/${TRIPLE}-cross/${TRIPLE}/lib/; \
-    done
+# Node.js 20 (glibc-linked, used as a build tool for all targets).
+# Installed from the official nodejs.org static tarball rather than via
+# NodeSource: the tarball bundles npm and corepack and does not depend on
+# NodeSource's apt repo or GPG key server, which has intermittently returned
+# HTTP 403 from CI runners. When the key import failed, the NodeSource setup
+# script exited 0, so `apt-get install nodejs` silently fell back to Ubuntu's
+# stock nodejs package (which does not bundle npm), breaking later npm steps.
+ARG NODE_VERSION=20.20.2
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) NODE_ARCH=x64 ;; \
+      arm64) NODE_ARCH=arm64 ;; \
+      *) echo "unsupported host architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSLo /tmp/node.tar.xz \
+      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+      --exclude CHANGELOG.md --exclude LICENSE --exclude README.md && \
+    rm /tmp/node.tar.xz && \
+    node --version && npm --version
+
+# Import prebuilt musl sysroots from the rust-musl-cross images and stage them
+# under /opt/*-cross for docker-native-build.sh. The symlinks provide the
+# target names that our clang --sysroot flags use, and libgcc/crt objects are
+# copied into the sysroot lib dir so clang/rust-lld can find them while linking.
+COPY --from=musl_x86_64 /usr/local/musl /opt/x86_64-linux-musl-cross
+COPY --from=musl_aarch64 /usr/local/musl /opt/aarch64-linux-musl-cross
+RUN ln -s x86_64-unknown-linux-musl /opt/x86_64-linux-musl-cross/x86_64-linux-musl && \
+    ln -s aarch64-unknown-linux-musl /opt/aarch64-linux-musl-cross/aarch64-linux-musl && \
+    cp /opt/x86_64-linux-musl-cross/lib/gcc/x86_64-unknown-linux-musl/*/crt*.o \
+       /opt/x86_64-linux-musl-cross/lib/gcc/x86_64-unknown-linux-musl/*/libgcc.a \
+       /opt/x86_64-linux-musl-cross/x86_64-linux-musl/lib/ && \
+    cp /opt/aarch64-linux-musl-cross/lib/gcc/aarch64-unknown-linux-musl/*/crt*.o \
+       /opt/aarch64-linux-musl-cross/lib/gcc/aarch64-unknown-linux-musl/*/libgcc.a \
+       /opt/aarch64-linux-musl-cross/aarch64-linux-musl/lib/
 
 # Install Rust — pinned nightly from rust-toolchain.toml
 # The COPY of rust-toolchain.toml ensures the image rebuilds when the toolchain changes.
@@ -90,7 +112,7 @@ ARG CARGO_BINSTALL_VERSION=1.18.1
 RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-${ARCH}-unknown-linux-musl.tgz" \
       | tar xz -C /root/.cargo/bin && \
-    npm i -g @napi-rs/cli@2.18.4 && \
+    npm i -g @napi-rs/cli@3.7.2 && \
     cargo binstall --no-confirm --targets "${ARCH}-unknown-linux-musl" cargo-rustflags@0.4.0 && \
     cargo binstall --no-confirm --git https://github.com/vercel/sccache sccache && \
     node --version && rustc --version && napi -h > /dev/null && cargo rustflags --help > /dev/null && sccache --version

@@ -39,7 +39,7 @@ impl WrappedGetContentSourceContent {
     }
 }
 
-#[turbo_tasks::function(operation)]
+#[turbo_tasks::function(operation, root)]
 async fn wrap_sources_operation(
     sources: OperationVc<GetContentSourceContents>,
     processor: ResolvedVc<Box<dyn ContentSourceProcessor>>,
@@ -54,7 +54,7 @@ async fn wrap_sources_operation(
                     **s, *processor,
                 ))
             })
-            .map(|v| async move { v.to_resolved().await })
+            .map(|v| v.to_resolved())
             .try_join()
             .await?,
     ))

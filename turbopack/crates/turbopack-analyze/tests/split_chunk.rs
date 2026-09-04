@@ -22,7 +22,7 @@ static REGISTRATION: Registration = register!();
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn split_chunk() {
-    run_once(&REGISTRATION, || async {
+    run_once(&REGISTRATION, async || {
         let mut code = CodeBuilder::new(true, false);
         code += "Hello world!\n";
         code += "This is a test file.\n";
@@ -55,7 +55,7 @@ async fn split_chunk() {
         }
         .resolved_cell();
 
-        #[turbo_tasks::function(operation)]
+        #[turbo_tasks::function(operation, root)]
         fn split_parts_operation(asset: ResolvedVc<TestAsset>) -> Vc<ChunkParts> {
             split_output_asset_into_parts(Vc::upcast(*asset))
         }
@@ -96,13 +96,16 @@ async fn split_chunk() {
             }]
         );
 
-        #[turbo_tasks::function(operation)]
+        #[turbo_tasks::function(operation, root)]
         async fn compressed_size_operation(
             parts: OperationVc<ChunkParts>,
             index: usize,
         ) -> Result<Vc<u32>> {
             Ok(Vc::cell(
-                parts.connect().await?[index].get_compressed_size().await?,
+                parts.connect().await?[index]
+                    .get_compressed_size()
+                    .await?
+                    .unwrap(),
             ))
         }
 

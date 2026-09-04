@@ -5,12 +5,6 @@ packages:
   - 'crates/*/js'
   - 'turbopack/crates/*/js'
   - 'turbopack/crates/turbopack-tests/tests/execution'
-  - 'turbopack/packages/*'
-catalog:
-  eslint: 9.37.0
-  jest: 29.7.0
-  prettier: 3.6.2
-  typescript: 6.0.2
 updateNotifier: false
 publicHoistPattern:
   - '*eslint*'
@@ -34,16 +28,23 @@ ignoredBuiltDependencies:
   - ssh2
   - unrs-resolver
   - wasm-pack
-# Keep security related settings in sync with pnpm-workspace.yaml written to
-# temporary fixture dirs in file://./scripts/install-native.mjs
+
+# - Keep security related settings in sync with pnpm-workspace.yaml written to
+#   temporary fixture dirs in `file://./scripts/install-native.mjs`
+# - `file://./test/lib/pnpm-security-settings.js` reads and copies these values for
+#   isolated test dirs
 blockExoticSubdeps: true
 minimumReleaseAge: 2880 # 48 hrs
 minimumReleaseAgeExclude:
+  - '@mswjs/interceptors@0.42.0'
   - '@next/*'
   - '@turbo/*'
+  - '@types/react@19.2.18'
+  - '@types/react-dom@19.2.4'
   - '@vercel/*'
   - '@workflow/*'
   - babel-plugin-react-compiler
+  - httpxy@0.5.5
   - next
   - react
   - react-dom

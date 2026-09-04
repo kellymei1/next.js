@@ -9,7 +9,14 @@ autobenches = false
 [lib]
 bench = false
 
+[[bench]]
+name = "allocation"
+harness = false
+
 [dependencies]
+
+[dev-dependencies]
+criterion = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 libmimalloc-sys = { version = "0.1.44", features = [
@@ -28,6 +35,12 @@ mimalloc = { version = "0.1.48", features = [
   "extended",
   "local_dynamic_tls",
 ], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation"] }
 
 [features]
 custom_allocator = ["dep:mimalloc", "dep:libmimalloc-sys"]

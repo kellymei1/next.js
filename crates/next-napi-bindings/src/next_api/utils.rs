@@ -1,25 +1,29 @@
-use std::{future::Future, ops::Deref, sync::Arc};
+use std::{
+    future::Future,
+    ops::Deref,
+    sync::{Arc, LazyLock},
+};
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::TryFutureExt;
 use napi::{
-    JsFunction, JsObject, JsUnknown, NapiRaw, NapiValue, Status,
-    bindgen_prelude::{Buffer, External, ToNapiValue},
-    threadsafe_function::{ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    Env, Status, Unknown,
+    bindgen_prelude::{
+        Buffer, External, ExternalRef, FunctionRef, JsObjectValue, JsValue, Object, ToNapiValue,
+    },
+    threadsafe_function::{ThreadsafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
 use napi_derive::napi;
-use next_code_frame::{CodeFrameLocation, CodeFrameOptions, Location, render_code_frame};
-use once_cell::sync::Lazy;
+use next_code_frame::{
+    CodeFrameColorMode, CodeFrameLocation, CodeFrameOptions, Location, render_code_frame,
+};
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{
-    Effects, OperationVc, ReadRef, TaskId, TryJoinIterExt, Vc, VcValueType, take_effects,
-};
+use turbo_tasks::{Effects, OperationVc, ReadRef, TaskId, Vc, VcValueType, take_effects};
 use turbo_tasks_fs::FileContent;
 use turbopack_core::{
-    diagnostics::{Diagnostic, DiagnosticContextExt, PlainDiagnostic},
     issue::{
         CollectibleIssuesExt, IssueFilter, IssueSeverity, PlainIssue, PlainIssueSource,
         PlainSource, StyledString,
@@ -88,7 +92,7 @@ impl Drop for RootTask {
 
 #[napi]
 pub fn root_task_dispose(
-    #[napi(ts_arg_type = "{ __napiType: \"RootTask\" }")] mut root_task: External<RootTask>,
+    #[napi(ts_arg_type = "{ __napiType: \"RootTask\" }")] mut root_task: ExternalRef<RootTask>,
 ) -> napi::Result<()> {
     if let Some(task) = root_task.task_id.take() {
         root_task
@@ -99,7 +103,7 @@ pub fn root_task_dispose(
     Ok(())
 }
 
-/// [Peeks] at the [`Issue`] held by the given source and returns it as a [`PlainDiagnostic`].
+/// [Peeks] at the [`Issue`]s held by the given source and returns them as [`PlainIssue`]s.
 /// It does not [consume] any [`Issue`]s held by the source.
 ///
 /// [Peeks]: turbo_tasks::CollectiblesSource::peek_collectibles
@@ -107,32 +111,11 @@ pub fn root_task_dispose(
 /// [consume]: turbo_tasks::CollectiblesSource::take_collectibles
 pub async fn get_issues<T: Send>(
     source: OperationVc<T>,
-    filter: Vc<IssueFilter>,
+    filter: &IssueFilter,
 ) -> Result<Arc<Vec<ReadRef<PlainIssue>>>> {
     Ok(Arc::new(
         source.peek_issues().get_plain_issues(filter).await?,
     ))
-}
-
-/// [Peeks] at the [`Diagnostic`]s held by the given source and returns it as a [`PlainDiagnostic`].
-/// It does not [consume] any [`Diagnostic`]s held by the source.
-///
-/// [Peeks]: turbo_tasks::CollectiblesSource::peek_collectibles
-/// [consume]: turbo_tasks::CollectiblesSource::take_collectibles
-pub async fn get_diagnostics<T: Send>(
-    source: OperationVc<T>,
-) -> Result<Arc<Vec<ReadRef<PlainDiagnostic>>>> {
-    let captured_diags = source.peek_diagnostics().await?;
-    let mut diags = captured_diags
-        .diagnostics
-        .iter()
-        .map(|d| d.into_plain())
-        .try_join()
-        .await?;
-
-    diags.sort();
-
-    Ok(Arc::new(diags))
 }
 
 /// Returns true if the file path refers to a Next.js/React internal file whose
@@ -143,7 +126,7 @@ pub async fn get_diagnostics<T: Send>(
 fn is_internal(file_path: &str) -> bool {
     // Uses [/\\] so both Unix and Windows separators are matched without
     // needing to normalize the path
-    static RE: Lazy<Regex> = Lazy::new(|| {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
             r"(?x)
             # React vendored in Next.js dist/compiled (reactVendoredRe)
@@ -170,7 +153,11 @@ fn is_internal(file_path: &str) -> bool {
 ///
 /// Because this accesses the terminal size, this function call should not be cached (e.g. in
 /// turbo-tasks).
-fn render_source_code_frame(source: &PlainIssueSource, file_path: &str) -> Result<Option<String>> {
+fn render_source_code_frame(
+    severity: IssueSeverity,
+    source: &PlainIssueSource,
+    file_path: &str,
+) -> Result<Option<String>> {
     let Some((start, end)) = source.range else {
         return Ok(None);
     };
@@ -205,7 +192,16 @@ fn render_source_code_frame(source: &PlainIssueSource, file_path: &str) -> Resul
         &content,
         &location,
         &CodeFrameOptions {
-            color: true,
+            color: match severity {
+                IssueSeverity::Bug | IssueSeverity::Fatal | IssueSeverity::Error => {
+                    CodeFrameColorMode::Error
+                }
+                IssueSeverity::Warning => CodeFrameColorMode::Warning,
+                IssueSeverity::Hint
+                | IssueSeverity::Note
+                | IssueSeverity::Suggestion
+                | IssueSeverity::Info => CodeFrameColorMode::Info,
+            },
             highlight_code: true,
             max_width: terminal_size::terminal_size()
                 .map(|(w, _)| w.0 as usize)
@@ -220,7 +216,7 @@ fn render_issue_code_frame(issue: &PlainIssue) -> Result<Option<String>> {
     let Some(source) = issue.source.as_ref() else {
         return Ok(None);
     };
-    render_source_code_frame(source, &issue.file_path)
+    render_source_code_frame(issue.severity, source, &issue.file_path)
 }
 
 #[napi(object)]
@@ -269,8 +265,12 @@ impl From<&PlainIssue> for NapiIssue {
                 .iter()
                 .map(|s| NapiAdditionalIssueSource {
                     description: s.description.clone(),
-                    code_frame: render_source_code_frame(&s.source, &s.source.asset.file_path)
-                        .unwrap_or_default(),
+                    code_frame: render_source_code_frame(
+                        issue.severity,
+                        &s.source,
+                        &s.source.asset.file_path,
+                    )
+                    .unwrap_or_default(),
                     source: (&s.source).into(),
                 })
                 .collect(),
@@ -361,8 +361,8 @@ pub struct NapiSource {
 impl From<&PlainSource> for NapiSource {
     fn from(source: &PlainSource) -> Self {
         Self {
-            ident: (*source.ident).clone(),
-            file_path: (*source.file_path).clone(),
+            ident: source.ident.clone(),
+            file_path: source.file_path.clone(),
         }
     }
 }
@@ -383,23 +383,17 @@ impl From<SourcePos> for NapiSourcePos {
 }
 
 #[napi(object)]
-pub struct NapiDiagnostic {
-    pub category: RcStr,
-    pub name: RcStr,
-    #[napi(ts_type = "Record<string, string>")]
-    pub payload: FxHashMap<RcStr, RcStr>,
+pub struct NapiUsedFeature {
+    pub feature_name: RcStr,
+    /// How many times it was used, typically this means how often it was imported.
+    pub invocation_count: u32,
 }
 
-impl NapiDiagnostic {
-    pub fn from(diagnostic: &PlainDiagnostic) -> Self {
+impl NapiUsedFeature {
+    pub fn new(feature_name: RcStr, invocation_count: u32) -> Self {
         Self {
-            category: diagnostic.category.clone(),
-            name: diagnostic.name.clone(),
-            payload: diagnostic
-                .payload
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            feature_name,
+            invocation_count,
         }
     }
 }
@@ -407,7 +401,6 @@ impl NapiDiagnostic {
 pub struct TurbopackResult<T: ToNapiValue> {
     pub result: T,
     pub issues: Vec<NapiIssue>,
-    pub diagnostics: Vec<NapiDiagnostic>,
 }
 
 impl<T: ToNapiValue> ToNapiValue for TurbopackResult<T> {
@@ -415,36 +408,40 @@ impl<T: ToNapiValue> ToNapiValue for TurbopackResult<T> {
         env: napi::sys::napi_env,
         val: Self,
     ) -> napi::Result<napi::sys::napi_value> {
-        let mut obj = unsafe { napi::Env::from_raw(env).create_object()? };
+        let result_raw = unsafe { T::to_napi_value(env, val.result)? };
+        let result = unsafe { Unknown::from_raw_unchecked(env, result_raw) };
 
-        let result = unsafe {
-            let result = T::to_napi_value(env, val.result)?;
-            JsUnknown::from_raw(env, result)?
+        // When the result is an object, extend it in place with the `issues`
+        // property. Otherwise, produce a fresh object holding only `issues`.
+        let mut obj = if matches!(result.get_type()?, napi::ValueType::Object) {
+            Object::from_raw(env, result_raw)
+        } else {
+            Object::new(&Env::from_raw(env))?
         };
-        if matches!(result.get_type()?, napi::ValueType::Object) {
-            // SAFETY: We know that result is an object, so we can cast it to a JsObject
-            let result = unsafe { result.cast::<JsObject>() };
-
-            for key in JsObject::keys(&result)? {
-                let value: JsUnknown = result.get_named_property(&key)?;
-                obj.set_named_property(&key, value)?;
-            }
-        }
 
         obj.set_named_property("issues", val.issues)?;
-        obj.set_named_property("diagnostics", val.diagnostics)?;
 
-        Ok(unsafe { obj.raw() })
+        Ok(obj.raw())
     }
 }
 
-pub fn subscribe<T: 'static + Send + Sync, F: Future<Output = Result<T>> + Send, V: ToNapiValue>(
+pub fn subscribe<
+    T: 'static + Send + Sync,
+    F: Future<Output = Result<T>> + Send,
+    V: 'static + ToNapiValue,
+>(
     ctx: NextTurbopackContext,
-    func: JsFunction,
+    env: &Env,
+    func: &FunctionRef<V, ()>,
     handler: impl 'static + Sync + Send + Clone + Fn() -> F,
-    mapper: impl 'static + Sync + Send + FnMut(ThreadSafeCallContext<T>) -> napi::Result<Vec<V>>,
+    mapper: impl 'static + Sync + Send + FnMut(ThreadsafeCallContext<T>) -> napi::Result<V>,
 ) -> napi::Result<External<RootTask>> {
-    let func: ThreadsafeFunction<T> = func.create_threadsafe_function(0, mapper)?;
+    let js_func = func.borrow_back(env)?;
+    let func: ThreadsafeFunction<T, (), V, Status, true> = js_func
+        .build_threadsafe_function::<T>()
+        .callee_handled::<true>()
+        .build_callback(mapper)?;
+    let func = Arc::new(func);
     let task_id = ctx.turbo_tasks().spawn_root_task({
         let ctx = ctx.clone();
         move || {
@@ -476,16 +473,14 @@ pub fn subscribe<T: 'static + Send + Sync, F: Future<Output = Result<T>> + Send,
 // propagate any actual error results.
 pub async fn strongly_consistent_catch_collectables<R: VcValueType + Send>(
     source_op: OperationVc<R>,
-    filter: Vc<IssueFilter>,
+    filter: &IssueFilter,
 ) -> Result<(
     Option<ReadRef<R>>,
     Arc<Vec<ReadRef<PlainIssue>>>,
-    Arc<Vec<ReadRef<PlainDiagnostic>>>,
     Arc<Effects>,
 )> {
     let result = source_op.read_strongly_consistent().await;
     let issues = get_issues(source_op, filter).await?;
-    let diagnostics = get_diagnostics(source_op).await?;
     let effects = Arc::new(take_effects(source_op).await?);
 
     let result = if result.is_err() && issues.iter().any(|i| i.severity <= IssueSeverity::Error) {
@@ -494,7 +489,7 @@ pub async fn strongly_consistent_catch_collectables<R: VcValueType + Send>(
         Some(result?)
     };
 
-    Ok((result, issues, diagnostics, effects))
+    Ok((result, issues, effects))
 }
 
 #[napi]
